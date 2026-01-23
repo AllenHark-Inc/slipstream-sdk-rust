@@ -1,0 +1,32 @@
+[package]
+name = "allenhark-slipstream"
+version = "0.1.0"
+edition = "2021"
+description = "Slipstream client SDK for Rust - Solana transaction relay"
+license = "Proprietary"
+repository = "https://github.com/AllenHark-Inc/Slipstream"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# QUIC
+quinn = "0.10"
+rustls = "0.21"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP/gRPC fallback
+reqwest = { version = "0.11", features = ["json"] }
+tonic = "0.10"
+
+# Utilities
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+rand = "0.8"
+
+[dev-dependencies]
+tokio-test = "0.4"
