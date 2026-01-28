@@ -15,6 +15,7 @@ The Slipstream SDK provides a robust, low-latency connection to the Slipstream G
 - **Stream Intelligence** such as leader hints, priority fees, and tip instructions in real-time.
 - **Ensure Reliability** through automatic protocol fallback and background health monitoring.
 
+
 ## Features
 
 - **Multi-Protocol Support**: Primary **QUIC** transport for speed, falling back to **gRPC**, **WebSocket**, and **HTTP** to ensure connectivity in any environment.
