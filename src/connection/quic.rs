@@ -1,0 +1,850 @@
+//! QUIC transport implementation using quinn
+//!
+//! This is the primary transport for low-latency connections.
+
+use super::Transport;
+use crate::config::{Config, Protocol};
+use crate::error::{Result, SdkError};
+use crate::types::{
+    ConnectionInfo, LeaderHint, PriorityFee, RateLimitInfo, SubmitOptions, TipInstruction,
+    TransactionResult, TransactionStatus,
+};
+use async_trait::async_trait;
+use quinn::{ClientConfig, Connection, Endpoint};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, info, warn};
+
+/// Stream type identifiers (must match server)
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamType {
+    TransactionSubmit = 0x01,
+    LeaderHints = 0x02,
+    TipInstructions = 0x03,
+    PriorityFees = 0x04,
+    Metrics = 0x05,
+}
+
+/// Transaction response status codes
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseStatus {
+    Accepted = 0x01,
+    Duplicate = 0x02,
+    RateLimited = 0x03,
+    ServerError = 0x04,
+}
+
+impl ResponseStatus {
+    fn from_byte(value: u8) -> Option<Self> {
+        match value {
+            0x01 => Some(ResponseStatus::Accepted),
+            0x02 => Some(ResponseStatus::Duplicate),
+            0x03 => Some(ResponseStatus::RateLimited),
+            0x04 => Some(ResponseStatus::ServerError),
+            _ => None,
+        }
+    }
+}
+
+/// QUIC transport implementation
+pub struct QuicTransport {
+    endpoint: Option<Endpoint>,
+    connection: RwLock<Option<Connection>>,
+    config: Option<Config>,
+    connected: AtomicBool,
+    session_id: RwLock<Option<String>>,
+    request_counter: AtomicU32,
+}
+
+impl QuicTransport {
+    /// Create a new QUIC transport
+    pub fn new() -> Self {
+        Self {
+            endpoint: None,
+            connection: RwLock::new(None),
+            config: None,
+            connected: AtomicBool::new(false),
+            session_id: RwLock::new(None),
+            request_counter: AtomicU32::new(0),
+        }
+    }
+
+    /// Generate a unique request ID
+    fn next_request_id(&self) -> u32 {
+        self.request_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Build QUIC client configuration with custom TLS
+    fn build_client_config() -> Result<ClientConfig> {
+        // Create rustls config that accepts any certificate (for development)
+        // In production, you'd want proper certificate validation
+        let crypto = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+            .with_no_client_auth();
+
+        let mut client_config = ClientConfig::new(Arc::new(crypto));
+
+        // Configure transport parameters
+        let mut transport_config = quinn::TransportConfig::default();
+        transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+        transport_config.max_idle_timeout(Some(
+            quinn::IdleTimeout::try_from(Duration::from_secs(30))
+                .map_err(|e| SdkError::protocol(format!("Invalid timeout: {}", e)))?,
+        ));
+        client_config.transport_config(Arc::new(transport_config));
+
+        Ok(client_config)
+    }
+
+    /// Parse endpoint URL to socket address
+    fn parse_endpoint(url: &str) -> Result<(SocketAddr, String)> {
+        // Expected format: quic://host:port or just host:port
+        let url = url.trim_start_matches("quic://");
+
+        // Split host and port
+        let parts: Vec<&str> = url.rsplitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(SdkError::config("Invalid QUIC endpoint format, expected host:port"));
+        }
+
+        let port: u16 = parts[0]
+            .parse()
+            .map_err(|_| SdkError::config("Invalid port number"))?;
+        let host = parts[1];
+
+        // Resolve to socket address (use first resolved address)
+        let addr_str = format!("{}:{}", host, port);
+        let addr: SocketAddr = addr_str
+            .parse()
+            .or_else(|_| {
+                // Try DNS resolution
+                use std::net::ToSocketAddrs;
+                addr_str
+                    .to_socket_addrs()
+                    .map_err(|e| SdkError::connection(format!("DNS resolution failed: {}", e)))?
+                    .next()
+                    .ok_or_else(|| SdkError::connection("No addresses found"))
+            })?;
+
+        Ok((addr, host.to_string()))
+    }
+
+    /// Perform authentication on the connection
+    async fn authenticate(
+        &self,
+        connection: &Connection,
+        api_key: &str,
+    ) -> Result<String> {
+        // Open first bi-directional stream for authentication
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to open auth stream: {}", e)))?;
+
+        // Build auth frame: 8-byte key prefix + optional version string
+        let key_prefix = if api_key.starts_with("sk_") {
+            &api_key[3..11.min(api_key.len())]
+        } else {
+            &api_key[..8.min(api_key.len())]
+        };
+
+        // Pad to 8 bytes if needed
+        let mut auth_frame = [0u8; 64];
+        let prefix_bytes = key_prefix.as_bytes();
+        let prefix_len = prefix_bytes.len().min(8);
+        auth_frame[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
+
+        // Add client version string after key prefix
+        let version = b"rust-sdk-v0.1";
+        auth_frame[8..8 + version.len()].copy_from_slice(version);
+
+        // Send auth frame
+        send.write_all(&auth_frame[..8 + version.len()])
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to send auth: {}", e)))?;
+
+        // Read auth response
+        let mut response_buf = [0u8; 256];
+        let n = recv
+            .read(&mut response_buf)
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to read auth response: {}", e)))?
+            .ok_or_else(|| SdkError::auth("Connection closed during authentication"))?;
+
+        if n < 1 {
+            return Err(SdkError::auth("Empty auth response"));
+        }
+
+        // Parse response: first byte is status (0x01 = success, 0x00 = error)
+        let status = response_buf[0];
+        let message = String::from_utf8_lossy(&response_buf[1..n]).to_string();
+
+        if status == 0x01 {
+            debug!(message = %message, "QUIC authentication successful");
+            Ok(message)
+        } else {
+            Err(SdkError::auth(format!("Authentication failed: {}", message)))
+        }
+    }
+
+    /// Subscribe to a stream type
+    async fn subscribe_stream<T, F>(
+        &self,
+        stream_type: StreamType,
+        decoder: F,
+    ) -> Result<mpsc::Receiver<T>>
+    where
+        T: Send + 'static,
+        F: Fn(&[u8]) -> Option<T> + Send + Sync + 'static,
+    {
+        let connection = {
+            let guard = self.connection.read().await;
+            guard
+                .as_ref()
+                .ok_or(SdkError::NotConnected)?
+                .clone()
+        };
+
+        let (tx, rx) = mpsc::channel(32);
+
+        // Open a uni-directional stream to request subscription
+        let mut send = connection
+            .open_uni()
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to open subscription stream: {}", e)))?;
+
+        // Send stream type byte
+        send.write_all(&[stream_type as u8])
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to send subscription request: {}", e)))?;
+
+        // Close our send side
+        send.finish()
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to finish stream: {}", e)))?;
+
+        // Spawn task to receive data on incoming uni-streams
+        let conn = connection.clone();
+        tokio::spawn(async move {
+            loop {
+                match conn.accept_uni().await {
+                    Ok(mut recv) => {
+                        let mut buf = vec![0u8; 256];
+                        match recv.read(&mut buf).await {
+                            Ok(Some(n)) if n > 0 => {
+                                // Check stream type matches
+                                if buf[0] == stream_type as u8 {
+                                    if let Some(data) = decoder(&buf[..n]) {
+                                        if tx.send(data).await.is_err() {
+                                            debug!("Receiver dropped, stopping subscription");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(_) => continue,
+                            Err(e) => {
+                                warn!(error = %e, "Error reading subscription data");
+                                break;
+                            }
+                        }
+                    }
+                    Err(quinn::ConnectionError::ApplicationClosed(_)) => {
+                        debug!("Connection closed, stopping subscription");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Error accepting subscription stream");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+}
+
+impl Default for QuicTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Transport for QuicTransport {
+    async fn connect(&mut self, config: &Config) -> Result<ConnectionInfo> {
+        let endpoint_url = config.get_endpoint(Protocol::Quic);
+        self.config = Some(config.clone());
+
+        debug!(endpoint = %endpoint_url, "Connecting via QUIC");
+
+        // Parse endpoint
+        let (server_addr, server_name) = Self::parse_endpoint(&endpoint_url)?;
+
+        // Build client config
+        let client_config = Self::build_client_config()?;
+
+        // Create endpoint (bind to any available port)
+        let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
+            .map_err(|e| SdkError::connection(format!("Failed to create endpoint: {}", e)))?;
+
+        endpoint.set_default_client_config(client_config);
+
+        // Connect to server
+        let connection = endpoint
+            .connect(server_addr, &server_name)
+            .map_err(|e| SdkError::connection(format!("Failed to initiate connection: {}", e)))?
+            .await
+            .map_err(|e| SdkError::connection(format!("Connection failed: {}", e)))?;
+
+        debug!(
+            remote = %connection.remote_address(),
+            "QUIC connection established"
+        );
+
+        // Authenticate
+        let auth_result = self.authenticate(&connection, &config.api_key).await?;
+
+        // Store connection
+        self.endpoint = Some(endpoint);
+        {
+            let mut conn_guard = self.connection.write().await;
+            *conn_guard = Some(connection.clone());
+        }
+
+        // Generate session ID from auth result
+        let session_id = if auth_result.starts_with("ok:") {
+            format!("quic-{}", &auth_result[3..])
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+
+        {
+            let mut session_guard = self.session_id.write().await;
+            *session_guard = Some(session_id.clone());
+        }
+
+        self.connected.store(true, Ordering::SeqCst);
+
+        info!(
+            session_id = %session_id,
+            remote = %connection.remote_address(),
+            "QUIC transport connected"
+        );
+
+        Ok(ConnectionInfo {
+            session_id,
+            protocol: "quic".to_string(),
+            region: config.region.clone(),
+            server_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            features: vec!["streaming".to_string(), "bidirectional".to_string()],
+            rate_limit: RateLimitInfo { rps: 1000, burst: 2000 },
+        })
+    }
+
+    async fn disconnect(&mut self) -> Result<()> {
+        self.connected.store(false, Ordering::SeqCst);
+
+        {
+            let mut conn_guard = self.connection.write().await;
+            if let Some(conn) = conn_guard.take() {
+                conn.close(0u32.into(), b"client_disconnect");
+            }
+        }
+
+        {
+            let mut session_guard = self.session_id.write().await;
+            *session_guard = None;
+        }
+
+        if let Some(endpoint) = self.endpoint.take() {
+            endpoint.wait_idle().await;
+        }
+
+        debug!("QUIC transport disconnected");
+        Ok(())
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
+    }
+
+    fn protocol(&self) -> Protocol {
+        Protocol::Quic
+    }
+
+    async fn submit_transaction(
+        &self,
+        transaction: &[u8],
+        _options: &SubmitOptions,
+    ) -> Result<TransactionResult> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        let connection = {
+            let guard = self.connection.read().await;
+            guard
+                .as_ref()
+                .ok_or(SdkError::NotConnected)?
+                .clone()
+        };
+
+        let request_id = self.next_request_id();
+
+        debug!(
+            request_id = request_id,
+            tx_size = transaction.len(),
+            "Submitting transaction via QUIC"
+        );
+
+        // Open bi-directional stream for transaction
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to open transaction stream: {}", e)))?;
+
+        // Build transaction frame: stream_type (1 byte) + transaction data
+        let mut frame = Vec::with_capacity(1 + transaction.len());
+        frame.push(StreamType::TransactionSubmit as u8);
+        frame.extend_from_slice(transaction);
+
+        // Send transaction
+        send.write_all(&frame)
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to send transaction: {}", e)))?;
+
+        // Close send side
+        send.finish()
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to finish send: {}", e)))?;
+
+        // Read response
+        let mut response_buf = vec![0u8; 256];
+        let n = recv
+            .read(&mut response_buf)
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to read response: {}", e)))?
+            .ok_or_else(|| SdkError::transaction("Connection closed before response"))?;
+
+        if n < 6 {
+            return Err(SdkError::protocol("Response too short"));
+        }
+
+        // Parse response:
+        // - 4 bytes: request_id (u32 BE)
+        // - 1 byte: status
+        // - 1 byte: has_signature
+        // - 64 bytes: signature (if has_signature)
+        // - 2 bytes: error_len (u16 BE)
+        // - N bytes: error message
+
+        let resp_request_id = u32::from_be_bytes([
+            response_buf[0],
+            response_buf[1],
+            response_buf[2],
+            response_buf[3],
+        ]);
+        let status_byte = response_buf[4];
+        let has_signature = response_buf[5] != 0;
+
+        let mut offset = 6;
+
+        // Parse signature if present
+        let signature = if has_signature && n >= offset + 64 {
+            let sig = &response_buf[offset..offset + 64];
+            offset += 64;
+            Some(bs58::encode(sig).into_string())
+        } else {
+            None
+        };
+
+        // Parse error message
+        let error = if n >= offset + 2 {
+            let error_len = u16::from_be_bytes([response_buf[offset], response_buf[offset + 1]]) as usize;
+            offset += 2;
+            if error_len > 0 && n >= offset + error_len {
+                Some(String::from_utf8_lossy(&response_buf[offset..offset + error_len]).to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Map status to TransactionStatus
+        let status = match ResponseStatus::from_byte(status_byte) {
+            Some(ResponseStatus::Accepted) => TransactionStatus::Sent,
+            Some(ResponseStatus::Duplicate) => TransactionStatus::Duplicate,
+            Some(ResponseStatus::RateLimited) => TransactionStatus::RateLimited,
+            Some(ResponseStatus::ServerError) => TransactionStatus::Failed,
+            None => TransactionStatus::Failed,
+        };
+
+        let transaction_id = format!("tx-{}", request_id);
+
+        Ok(TransactionResult {
+            request_id: format!("req-{}", resp_request_id),
+            transaction_id,
+            signature,
+            status,
+            slot: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            routing: None,
+            error: error.map(|msg| crate::types::TransactionError {
+                code: "QUIC_ERROR".to_string(),
+                message: msg,
+                details: None,
+            }),
+        })
+    }
+
+    async fn subscribe_leader_hints(&self) -> Result<mpsc::Receiver<LeaderHint>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        self.subscribe_stream(StreamType::LeaderHints, |data| {
+            // Parse LeaderHint wire format:
+            // - 1 byte: stream type (0x02)
+            // - 1 byte: region_id length
+            // - N bytes: region_id
+            // - 2 bytes: confidence (u16, scaled 0-10000)
+            // - 4 bytes: slots_remaining (u32 BE)
+            // - 8 bytes: timestamp (u64 BE)
+
+            if data.len() < 2 || data[0] != StreamType::LeaderHints as u8 {
+                return None;
+            }
+
+            let mut offset = 1;
+            let region_len = data[offset] as usize;
+            offset += 1;
+
+            if data.len() < offset + region_len + 14 {
+                return None;
+            }
+
+            let preferred_region = String::from_utf8_lossy(&data[offset..offset + region_len]).to_string();
+            offset += region_len;
+
+            let confidence_raw = u16::from_be_bytes([data[offset], data[offset + 1]]);
+            // Scale from 0-10000 to 0-100
+            let confidence = (confidence_raw / 100) as u32;
+            offset += 2;
+
+            let slots_remaining = u32::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
+            offset += 4;
+
+            let timestamp = u64::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]);
+
+            // Estimate current slot from timestamp (approx 400ms per slot)
+            let slot = timestamp / 400;
+
+            Some(LeaderHint {
+                timestamp,
+                slot,
+                expires_at_slot: slot + slots_remaining as u64,
+                preferred_region,
+                backup_regions: vec![],
+                confidence,
+                leader_pubkey: None,
+                metadata: crate::types::LeaderHintMetadata {
+                    tpu_rtt_ms: 0,
+                    region_score: confidence as f64 / 100.0,
+                },
+            })
+        })
+        .await
+    }
+
+    async fn subscribe_tip_instructions(&self) -> Result<mpsc::Receiver<TipInstruction>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        self.subscribe_stream(StreamType::TipInstructions, |data| {
+            // Parse TipInstruction wire format:
+            // - 1 byte: stream type (0x03)
+            // - 1 byte: sender_id length
+            // - N bytes: sender_id
+            // - 1 byte: tip_wallet length
+            // - N bytes: tip_wallet
+            // - 8 bytes: tip_amount_lamports (u64 BE)
+            // - 1 byte: tier length
+            // - N bytes: tier
+            // - 4 bytes: expected_latency_ms (u32 BE)
+            // - 8 bytes: timestamp (u64 BE)
+
+            if data.len() < 2 || data[0] != StreamType::TipInstructions as u8 {
+                return None;
+            }
+
+            let mut offset = 1;
+
+            // Sender ID
+            let sender_len = data[offset] as usize;
+            offset += 1;
+            if data.len() < offset + sender_len {
+                return None;
+            }
+            let sender = String::from_utf8_lossy(&data[offset..offset + sender_len]).to_string();
+            offset += sender_len;
+
+            // Tip wallet
+            if data.len() < offset + 1 {
+                return None;
+            }
+            let wallet_len = data[offset] as usize;
+            offset += 1;
+            if data.len() < offset + wallet_len {
+                return None;
+            }
+            let tip_wallet_address = String::from_utf8_lossy(&data[offset..offset + wallet_len]).to_string();
+            offset += wallet_len;
+
+            // Tip amount (in lamports, convert to SOL)
+            if data.len() < offset + 8 {
+                return None;
+            }
+            let tip_amount_lamports = u64::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]);
+            let tip_amount_sol = tip_amount_lamports as f64 / 1_000_000_000.0;
+            offset += 8;
+
+            // Tier
+            if data.len() < offset + 1 {
+                return None;
+            }
+            let tier_len = data[offset] as usize;
+            offset += 1;
+            if data.len() < offset + tier_len {
+                return None;
+            }
+            let tip_tier = String::from_utf8_lossy(&data[offset..offset + tier_len]).to_string();
+            offset += tier_len;
+
+            // Expected latency
+            if data.len() < offset + 4 {
+                return None;
+            }
+            let expected_latency_ms = u32::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
+            offset += 4;
+
+            // Timestamp
+            if data.len() < offset + 8 {
+                return None;
+            }
+            let timestamp = u64::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]);
+
+            // Estimate valid_until_slot (approx 400ms per slot, valid for ~10 slots)
+            let valid_until_slot = timestamp / 400 + 10;
+
+            Some(TipInstruction {
+                timestamp,
+                sender: sender.clone(),
+                sender_name: sender,
+                tip_wallet_address,
+                tip_amount_sol,
+                tip_tier,
+                expected_latency_ms,
+                confidence: 90, // Default confidence
+                valid_until_slot,
+                alternative_senders: vec![],
+            })
+        })
+        .await
+    }
+
+    async fn subscribe_priority_fees(&self) -> Result<mpsc::Receiver<PriorityFee>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        self.subscribe_stream(StreamType::PriorityFees, |data| {
+            // Parse PriorityFee wire format:
+            // - 1 byte: stream type (0x04)
+            // - 8 bytes: micro_lamports_per_cu (u64 BE)
+            // - 1 byte: percentile
+            // - 4 bytes: sample_count (u32 BE)
+            // - 8 bytes: timestamp (u64 BE)
+
+            if data.len() < 22 || data[0] != StreamType::PriorityFees as u8 {
+                return None;
+            }
+
+            let compute_unit_price = u64::from_be_bytes([
+                data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+            ]);
+
+            let percentile = data[9];
+
+            let sample_count = u32::from_be_bytes([data[10], data[11], data[12], data[13]]);
+
+            let timestamp = u64::from_be_bytes([
+                data[14], data[15], data[16], data[17], data[18], data[19], data[20], data[21],
+            ]);
+
+            // Map percentile to speed tier
+            let speed = match percentile {
+                0..=50 => "low",
+                51..=75 => "medium",
+                _ => "high",
+            }
+            .to_string();
+
+            // Default compute unit limit (200k is typical)
+            let compute_unit_limit = 200_000u32;
+
+            // Estimate cost: (price * limit) / 1_000_000 (micro-lamports to lamports) / 1e9 (to SOL)
+            let estimated_cost_sol = (compute_unit_price * compute_unit_limit as u64) as f64 / 1e15;
+
+            // Map percentile to landing probability
+            let landing_probability = match percentile {
+                0..=25 => 50,
+                26..=50 => 70,
+                51..=75 => 85,
+                76..=90 => 95,
+                _ => 99,
+            };
+
+            Some(PriorityFee {
+                timestamp,
+                speed,
+                compute_unit_price,
+                compute_unit_limit,
+                estimated_cost_sol,
+                landing_probability,
+                network_congestion: if compute_unit_price > 100_000 { "high" } else if compute_unit_price > 10_000 { "medium" } else { "low" }.to_string(),
+                recent_success_rate: sample_count as f64 / 100.0, // Approximate
+            })
+        })
+        .await
+    }
+}
+
+/// Custom certificate verifier that skips verification (for development)
+/// In production, use proper certificate validation
+#[derive(Debug)]
+struct SkipServerVerification;
+
+impl rustls::client::ServerCertVerifier for SkipServerVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::ServerCertVerified::assertion())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quic_transport_new() {
+        let transport = QuicTransport::new();
+        assert!(!transport.is_connected());
+        assert_eq!(transport.protocol(), Protocol::Quic);
+    }
+
+    #[test]
+    fn test_parse_endpoint() {
+        // Test with quic:// prefix
+        let result = QuicTransport::parse_endpoint("quic://127.0.0.1:4433");
+        assert!(result.is_ok());
+        let (addr, host) = result.unwrap();
+        assert_eq!(addr.port(), 4433);
+        assert_eq!(host, "127.0.0.1");
+
+        // Test without prefix
+        let result = QuicTransport::parse_endpoint("127.0.0.1:4433");
+        assert!(result.is_ok());
+
+        // Test invalid format
+        let result = QuicTransport::parse_endpoint("invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_request_id_generation() {
+        let transport = QuicTransport::new();
+        let id1 = transport.next_request_id();
+        let id2 = transport.next_request_id();
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
+    }
+
+    #[test]
+    fn test_stream_type_values() {
+        assert_eq!(StreamType::TransactionSubmit as u8, 0x01);
+        assert_eq!(StreamType::LeaderHints as u8, 0x02);
+        assert_eq!(StreamType::TipInstructions as u8, 0x03);
+        assert_eq!(StreamType::PriorityFees as u8, 0x04);
+        assert_eq!(StreamType::Metrics as u8, 0x05);
+    }
+
+    #[test]
+    fn test_response_status_parsing() {
+        assert_eq!(ResponseStatus::from_byte(0x01), Some(ResponseStatus::Accepted));
+        assert_eq!(ResponseStatus::from_byte(0x02), Some(ResponseStatus::Duplicate));
+        assert_eq!(ResponseStatus::from_byte(0x03), Some(ResponseStatus::RateLimited));
+        assert_eq!(ResponseStatus::from_byte(0x04), Some(ResponseStatus::ServerError));
+        assert_eq!(ResponseStatus::from_byte(0x00), None);
+        assert_eq!(ResponseStatus::from_byte(0x05), None);
+    }
+}

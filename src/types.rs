@@ -254,6 +254,108 @@ pub struct RateLimitInfo {
     pub burst: u32,
 }
 
+/// Available protocols
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    /// QUIC - primary high-performance protocol
+    Quic,
+    /// gRPC - fallback protocol
+    Grpc,
+    /// WebSocket - streaming fallback
+    WebSocket,
+    /// HTTP - polling fallback
+    Http,
+}
+
+impl Protocol {
+    /// Get all protocols in fallback order
+    pub fn fallback_order() -> &'static [Protocol] {
+        &[Protocol::Quic, Protocol::Grpc, Protocol::WebSocket, Protocol::Http]
+    }
+}
+
+/// Worker endpoint configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerEndpoint {
+    /// Unique identifier for this worker
+    pub id: String,
+    /// Region identifier (e.g., "us-east", "eu-central")
+    pub region: String,
+    /// QUIC endpoint (e.g., "quic://worker1.us-east.slipstream.allenhark.com:4433")
+    pub quic: Option<String>,
+    /// gRPC endpoint (e.g., "http://worker1.us-east.slipstream.allenhark.com:10000")
+    pub grpc: Option<String>,
+    /// WebSocket endpoint (e.g., "wss://worker1.us-east.slipstream.allenhark.com/ws")
+    pub websocket: Option<String>,
+    /// HTTP endpoint (e.g., "https://worker1.us-east.slipstream.allenhark.com")
+    pub http: Option<String>,
+}
+
+impl WorkerEndpoint {
+    /// Create a new worker endpoint with all protocols at the same IP/host
+    /// Uses standard ports: QUIC=4433, gRPC=10000, WebSocket=9000, HTTP=9000
+    pub fn new(id: &str, region: &str, ip: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            region: region.to_string(),
+            quic: Some(format!("{}:4433", ip)),
+            grpc: Some(format!("http://{}:10000", ip)),
+            websocket: Some(format!("ws://{}:9000/ws", ip)),
+            http: Some(format!("http://{}:9000", ip)),
+        }
+    }
+
+    /// Create a worker endpoint with custom ports
+    pub fn with_ports(
+        id: &str,
+        region: &str,
+        ip: &str,
+        quic_port: u16,
+        grpc_port: u16,
+        ws_port: u16,
+        http_port: u16,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            region: region.to_string(),
+            quic: Some(format!("{}:{}", ip, quic_port)),
+            grpc: Some(format!("http://{}:{}", ip, grpc_port)),
+            websocket: Some(format!("ws://{}:{}/ws", ip, ws_port)),
+            http: Some(format!("http://{}:{}", ip, http_port)),
+        }
+    }
+
+    /// Create a worker endpoint with explicit endpoints
+    pub fn with_endpoints(
+        id: &str,
+        region: &str,
+        quic: Option<String>,
+        grpc: Option<String>,
+        websocket: Option<String>,
+        http: Option<String>,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            region: region.to_string(),
+            quic,
+            grpc,
+            websocket,
+            http,
+        }
+    }
+
+    /// Get endpoint for a specific protocol
+    pub fn get_endpoint(&self, protocol: Protocol) -> Option<&str> {
+        match protocol {
+            Protocol::Quic => self.quic.as_deref(),
+            Protocol::Grpc => self.grpc.as_deref(),
+            Protocol::WebSocket => self.websocket.as_deref(),
+            Protocol::Http => self.http.as_deref(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,7 @@
 //! Configuration types for the Slipstream SDK
 
 use crate::error::{Result, SdkError};
+pub use crate::types::{Protocol, WorkerEndpoint};
 use std::time::Duration;
 
 /// Default connection timeout (10 seconds)
@@ -47,6 +48,9 @@ pub struct Config {
 
     /// Preferred protocol (optional, auto-select if not set)
     pub preferred_protocol: Option<Protocol>,
+
+    /// Selected worker endpoint (override default discovery)
+    pub selected_worker: Option<WorkerEndpoint>,
 }
 
 /// Protocol timeout configuration
@@ -69,25 +73,7 @@ impl Default for ProtocolTimeouts {
     }
 }
 
-/// Available protocols
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Protocol {
-    /// QUIC - primary high-performance protocol
-    Quic,
-    /// gRPC - fallback protocol
-    Grpc,
-    /// WebSocket - streaming fallback
-    WebSocket,
-    /// HTTP - polling fallback
-    Http,
-}
 
-impl Protocol {
-    /// Get all protocols in fallback order
-    pub fn fallback_order() -> &'static [Protocol] {
-        &[Protocol::Quic, Protocol::Grpc, Protocol::WebSocket, Protocol::Http]
-    }
-}
 
 impl Config {
     /// Create a new configuration builder
@@ -108,11 +94,19 @@ impl Config {
 
     /// Get the endpoint URL with protocol
     pub fn get_endpoint(&self, protocol: Protocol) -> String {
+        // 1. Check if we have a resolved worker endpoint
+        if let Some(ref worker) = self.selected_worker {
+            if let Some(endpoint) = worker.get_endpoint(protocol) {
+                return endpoint.to_string();
+            }
+        }
+
+        // 2. Check for explicit endpoint override
         if let Some(ref endpoint) = self.endpoint {
             return endpoint.clone();
         }
 
-        // Default endpoints based on protocol
+        // 3. Default endpoints based on protocol
         match protocol {
             Protocol::Quic => "quic://localhost:4433".to_string(),
             Protocol::Grpc => "http://localhost:10000".to_string(),
@@ -135,6 +129,7 @@ pub struct ConfigBuilder {
     stream_priority_fees: Option<bool>,
     protocol_timeouts: Option<ProtocolTimeouts>,
     preferred_protocol: Option<Protocol>,
+    selected_worker: Option<WorkerEndpoint>,
 }
 
 impl ConfigBuilder {
@@ -213,6 +208,7 @@ impl ConfigBuilder {
             stream_priority_fees: self.stream_priority_fees.unwrap_or(false),
             protocol_timeouts: self.protocol_timeouts.unwrap_or_default(),
             preferred_protocol: self.preferred_protocol,
+            selected_worker: self.selected_worker,
         };
 
         config.validate()?;

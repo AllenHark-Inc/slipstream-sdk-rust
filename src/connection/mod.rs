@@ -2,12 +2,18 @@
 //!
 //! This module provides the transport abstraction and protocol-specific implementations.
 
+pub mod grpc;
 pub mod http;
+pub mod health;
+pub mod quic;
+pub mod selector;
+pub mod websocket;
 
-use crate::config::{Config, Protocol, ProtocolTimeouts};
+use crate::config::{Config, ProtocolTimeouts};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    ConnectionInfo, LeaderHint, PriorityFee, SubmitOptions, TipInstruction, TransactionResult,
+    ConnectionInfo, LeaderHint, PriorityFee, Protocol, SubmitOptions, TipInstruction,
+    TransactionResult,
 };
 use async_trait::async_trait;
 use std::time::Duration;
@@ -72,6 +78,29 @@ impl FallbackChain {
 
     /// Attempt to connect using the fallback chain
     pub async fn connect(&self, config: &Config) -> Result<Box<dyn Transport>> {
+        // Resolve worker if no explicit endpoint is set
+        let mut resolved_config = config.clone();
+        
+        if config.endpoint.is_none() && config.selected_worker.is_none() {
+             debug!("No endpoint configured, performing worker selection");
+             // In a real scenario, these would be bootstrap nodes
+             let selector = selector::WorkerSelectorBuilder::new()
+                .add_worker_host("local-1", "us-east", "127.0.0.1")
+                .build();
+            
+            match selector.select_best().await {
+                Ok(worker) => {
+                    info!(worker = %worker.id, "Selected best worker");
+                    resolved_config.selected_worker = Some(worker.clone());
+                }
+                Err(e) => {
+                    warn!(error = %e, "Worker selection failed, falling back to defaults");
+                }
+            }
+        }
+        
+        let config = &resolved_config;
+
         // If a preferred protocol is set, only try that one
         if let Some(preferred) = config.preferred_protocol {
             return self.try_protocol(config, preferred).await;
@@ -109,16 +138,25 @@ impl FallbackChain {
                 Ok(Box::new(transport))
             }
             Protocol::WebSocket => {
-                // WebSocket implementation will be added in Phase 2
-                Err(SdkError::protocol("WebSocket not yet implemented"))
+                let mut transport = websocket::WebSocketTransport::new();
+                tokio::time::timeout(timeout, transport.connect(config))
+                    .await
+                    .map_err(|_| SdkError::Timeout(timeout))??;
+                Ok(Box::new(transport))
             }
             Protocol::Grpc => {
-                // gRPC implementation will be added in Phase 3
-                Err(SdkError::protocol("gRPC not yet implemented"))
+                let mut transport = grpc::GrpcTransport::new();
+                tokio::time::timeout(timeout, transport.connect(config))
+                    .await
+                    .map_err(|_| SdkError::Timeout(timeout))??;
+                Ok(Box::new(transport))
             }
             Protocol::Quic => {
-                // QUIC implementation will be added in Phase 4
-                Err(SdkError::protocol("QUIC not yet implemented"))
+                let mut transport = quic::QuicTransport::new();
+                tokio::time::timeout(timeout, transport.connect(config))
+                    .await
+                    .map_err(|_| SdkError::Timeout(timeout))??;
+                Ok(Box::new(transport))
             }
         }
     }

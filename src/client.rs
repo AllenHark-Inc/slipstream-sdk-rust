@@ -66,9 +66,15 @@ impl SlipstreamClient {
             "Connected to Slipstream"
         );
 
+        let transport = Arc::new(RwLock::new(transport));
+
+        // Start health monitor to handle auto-reconnection
+        let monitor = crate::connection::health::HealthMonitor::new(config.clone(), transport.clone());
+        monitor.start();
+
         Ok(Self {
             config,
-            transport: Arc::new(RwLock::new(transport)),
+            transport,
             connection_info,
         })
     }
