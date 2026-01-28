@@ -40,5 +40,3 @@ async fn main() -> anyhow::Result<()> {
 - **Streaming Tips** - Real-time tip updates
 
 ## Documentation
-
-See [Architecture Doc](../../slipstream_arch.md) Section 9 for details.
