@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package slipstream;
+
+// SlipstreamService provides real-time streaming of transaction routing data
+// and transaction submission capabilities.
+service SlipstreamService {
+  // Subscribe to leader region hints (emitted every ~250ms when confidence >= 50)
+  rpc SubscribeLeaderHints(SubscriptionRequest) returns (stream LeaderHint);
+
+  // Subscribe to tip instructions (emitted on change or every ~1s)
+  rpc SubscribeTipInstructions(SubscriptionRequest) returns (stream TipInstruction);
+
+  // Subscribe to priority fee recommendations (emitted every ~1s)
+  rpc SubscribePriorityFees(SubscriptionRequest) returns (stream PriorityFee);
+
+  // Submit transactions with bidirectional streaming for status updates
+  rpc SubmitTransaction(stream TransactionRequest) returns (stream TransactionResponse);
+
+  // Get current connection status and rate limits
+  rpc GetConnectionStatus(ConnectionStatusRequest) returns (ConnectionStatusResponse);
+}
+
+// Common request for subscriptions
+message SubscriptionRequest {
+  // API key for authentication
+  string api_key = 1;
+  // Optional region preference
+  string region = 2;
+}
+
+// Leader region hint - indicates optimal region for transaction submission
+message LeaderHint {
+  // Timestamp in milliseconds since epoch
+  uint64 timestamp = 1;
+  // Current slot number
+  uint64 slot = 2;
+  // Slot when this hint expires
+  uint64 expires_at_slot = 3;
+  // Recommended region for submission
+  string preferred_region = 4;
+  // Backup regions in order of preference
+  repeated string backup_regions = 5;
+  // Confidence level (0-100)
+  uint32 confidence = 6;
+  // Leader validator pubkey (optional)
+  string leader_pubkey = 7;
+  // Additional metadata
+  LeaderHintMetadata metadata = 8;
+}
+
+message LeaderHintMetadata {
+  // TPU round-trip time in milliseconds
+  uint32 tpu_rtt_ms = 1;
+  // Region score (lower is better)
+  double region_score = 2;
+}
+
+// Tip instruction - recommended tip for optimal sender
+message TipInstruction {
+  // Timestamp in milliseconds since epoch
+  uint64 timestamp = 1;
+  // Sender identifier
+  string sender = 2;
+  // Human-readable sender name
+  string sender_name = 3;
+  // Tip wallet address to send tip to
+  string tip_wallet_address = 4;
+  // Recommended tip amount in SOL
+  double tip_amount_sol = 5;
+  // Tip tier name (e.g., "standard", "fast", "ultra_fast")
+  string tip_tier = 6;
+  // Expected latency in milliseconds
+  uint32 expected_latency_ms = 7;
+  // Confidence level (0-100)
+  uint32 confidence = 8;
+  // Slot until which this tip is valid
+  uint64 valid_until_slot = 9;
+  // Alternative senders
+  repeated AlternativeSender alternative_senders = 10;
+}
+
+message AlternativeSender {
+  string sender = 1;
+  double tip_amount_sol = 2;
+  uint32 confidence = 3;
+}
+
+// Priority fee recommendation
+message PriorityFee {
+  // Timestamp in milliseconds since epoch
+  uint64 timestamp = 1;
+  // Speed tier (slow, fast, ultra_fast)
+  string speed = 2;
+  // Recommended compute unit price in micro-lamports
+  uint64 compute_unit_price = 3;
+  // Recommended compute unit limit
+  uint32 compute_unit_limit = 4;
+  // Estimated cost in SOL
+  double estimated_cost_sol = 5;
+  // Probability of landing (0-100)
+  uint32 landing_probability = 6;
+  // Network congestion level (low, medium, high)
+  string network_congestion = 7;
+  // Recent success rate (0.0-1.0)
+  double recent_success_rate = 8;
+}
+
+// Transaction submission request
+message TransactionRequest {
+  // Client-generated request ID for correlation
+  string request_id = 1;
+  // Base64 encoded signed transaction
+  bytes transaction = 2;
+  // Optional dedup ID for logical deduplication
+  string dedup_id = 3;
+  // Submission options
+  TransactionOptions options = 4;
+}
+
+message TransactionOptions {
+  // Use broadcast mode (submit to multiple senders)
+  bool broadcast_mode = 1;
+  // Preferred sender (optional)
+  string preferred_sender = 2;
+  // Maximum retry attempts
+  uint32 max_retries = 3;
+  // Timeout in milliseconds
+  uint64 timeout_ms = 4;
+}
+
+// Transaction response - status updates
+message TransactionResponse {
+  // Original request ID
+  string request_id = 1;
+  // Server-generated transaction ID
+  string transaction_id = 2;
+  // Current status
+  TransactionStatus status = 3;
+  // Timestamp of this update
+  uint64 timestamp = 4;
+  // Routing information (when processing)
+  RoutingInfo routing = 5;
+  // Confirmation details (when confirmed)
+  ConfirmationInfo confirmation = 6;
+  // Error details (when failed)
+  ErrorInfo error = 7;
+}
+
+enum TransactionStatus {
+  TRANSACTION_STATUS_UNKNOWN = 0;
+  TRANSACTION_STATUS_PENDING = 1;
+  TRANSACTION_STATUS_PROCESSING = 2;
+  TRANSACTION_STATUS_SENT = 3;
+  TRANSACTION_STATUS_CONFIRMED = 4;
+  TRANSACTION_STATUS_FAILED = 5;
+}
+
+message RoutingInfo {
+  string dedup_decision = 1;
+  string selected_region = 2;
+  string selected_sender = 3;
+  double sender_confidence = 4;
+}
+
+message ConfirmationInfo {
+  string signature = 1;
+  uint64 slot = 2;
+  uint32 routing_latency_ms = 3;
+  uint32 sender_latency_ms = 4;
+  uint32 total_latency_ms = 5;
+}
+
+message ErrorInfo {
+  string code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}
+
+// Connection status request
+message ConnectionStatusRequest {
+  string api_key = 1;
+}
+
+// Connection status response
+message ConnectionStatusResponse {
+  bool connected = 1;
+  string session_id = 2;
+  string region = 3;
+  uint64 server_time = 4;
+  repeated string enabled_features = 5;
+  RateLimitInfo rate_limit = 6;
+}
+
+message RateLimitInfo {
+  uint32 requests_per_second = 1;
+  uint32 burst_size = 2;
+  uint32 remaining = 3;
+  uint64 reset_at = 4;
+}
