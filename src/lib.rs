@@ -82,10 +82,11 @@ pub mod types;
 
 // Re-export main types for convenience
 pub use client::SlipstreamClient;
-pub use config::{Config, ConfigBuilder, Protocol, ProtocolTimeouts};
+pub use config::{BackoffStrategy, Config, ConfigBuilder, PriorityFeeConfig, Protocol, ProtocolTimeouts};
 pub use error::{Result, SdkError};
 pub use types::{
-    AlternativeSender, ConnectionInfo, LeaderHint, LeaderHintMetadata, PriorityFee, RateLimitInfo,
+    AlternativeSender, ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint,
+    LeaderHintMetadata, PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo,
     RoutingInfo, SubmitOptions, TipInstruction, TransactionError, TransactionResult,
     TransactionStatus,
 };

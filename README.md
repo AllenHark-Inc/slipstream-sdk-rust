@@ -1,3 +1,5 @@
+[![allenhark.com](https://allenhark.com/allenhark-logo.png)](https://allenhark.com)
+
 # Slipstream Rust SDK
 
 The official Rust client for **AllenHark Slipstream**, the high-performance Solana transaction relay and intelligence network.
@@ -115,6 +117,43 @@ The `Config::builder()` provides a fluent interface for configuration:
 | `endpoint` | Explicit URL override (disables worker selection). | None |
 | `leader_hints` | Enable auto-subscription to leader hints. | `true` |
 | `protocol_timeouts` | Custom timeouts for QUIC, gRPC, etc. | Smart defaults |
+| `priority_fee` | Priority fee configuration (`PriorityFeeConfig`). | Disabled |
+| `retry_backoff` | Retry strategy: `Linear` or `Exponential`. | `Exponential` |
+| `min_confidence` | Min confidence for leader hints (0-100). | `70` |
+| `idle_timeout` | Connection idle timeout. | None (no timeout) |
+
+### Priority Fee Configuration
+
+```rust
+use allenhark_slipstream::{PriorityFeeConfig, PriorityFeeSpeed};
+
+let config = Config::builder()
+    .api_key("sk_test_123")
+    .priority_fee(PriorityFeeConfig {
+        enabled: true,
+        speed: PriorityFeeSpeed::UltraFast,
+        max_tip: Some(0.01), // Max 0.01 SOL
+    })
+    .build()?;
+```
+
+### Helper Methods
+
+```rust
+// Get the latest tip instruction (cached)
+if let Some(tip) = client.get_latest_tip().await {
+    println!("Tip {} SOL to {}", tip.tip_amount_sol, tip.tip_wallet_address);
+}
+
+// Get connection status
+let status = client.connection_status().await;
+println!("State: {:?}, Protocol: {:?}", status.state, status.protocol);
+
+// Get performance metrics
+let metrics = client.metrics();
+println!("Submitted: {}, Success Rate: {:.1}%", 
+    metrics.transactions_submitted, metrics.success_rate * 100.0);
+```
 
 ## Architecture
 
@@ -124,18 +163,83 @@ The `Config::builder()` provides a fluent interface for configuration:
 
 ## Examples
 
-Check the `examples/` directory for complete, runable code:
+The `examples/` directory contains comprehensive, runnable examples:
 
-- `examples/basic.rs`: Simple connection demo.
-- `examples/submit_transaction.rs`: submitting transactions with options.
+| Example | Description |
+|---------|-------------|
+| `basic.rs` | Simple connection and disconnection |
+| `submit_transaction.rs` | Transaction submission with options |
+| `priority_fees.rs` | Priority fee configuration and streaming |
+| `tip_instructions.rs` | Tip wallet and amount streaming |
+| `leader_hints.rs` | Leader region hints for optimal routing |
+| `broadcast_tx.rs` | Fan-out to multiple regions |
+| `signer_integration.rs` | Keypair, Ledger, multi-sig, MPC signing |
+| `deduplication.rs` | Prevent duplicate transaction submissions |
+| `streaming_callbacks.rs` | All streaming subscriptions (Rust channels) |
+| `advanced_config.rs` | Full configuration options |
 
-To run an example:
+Run any example with:
 ```bash
-cargo run --example basic
+SLIPSTREAM_API_KEY=sk_test_xxx cargo run --example priority_fees
+```
+
+## Streaming (Callbacks)
+
+Rust uses async channels instead of JavaScript-style callbacks:
+
+```rust
+// Subscribe to streams
+let mut hints = client.subscribe_leader_hints().await?;
+let mut tips = client.subscribe_tip_instructions().await?;
+let mut fees = client.subscribe_priority_fees().await?;
+
+// Handle all streams concurrently
+loop {
+    tokio::select! {
+        Some(hint) = hints.recv() => {
+            println!("Leader in {}", hint.preferred_region);
+        }
+        Some(tip) = tips.recv() => {
+            println!("Tip {} SOL", tip.tip_amount_sol);
+        }
+        Some(fee) = fees.recv() => {
+            println!("Fee {} µL/CU", fee.compute_unit_price);
+        }
+    }
+}
+```
+
+## Deduplication
+
+Prevent duplicate submissions with `dedup_id`:
+
+```rust
+let options = SubmitOptions {
+    dedup_id: Some("unique-tx-id-12345".to_string()),
+    max_retries: 5,
+    ..Default::default()
+};
+
+// Same dedup_id across retries = safe from double-spend
+let result = client.submit_transaction_with_options(&tx, &options).await?;
+```
+
+## Error Handling
+
+```rust
+use allenhark_slipstream::SdkError;
+
+match client.submit_transaction(&tx).await {
+    Ok(result) => println!("Signature: {:?}", result.signature),
+    Err(SdkError::Connection(msg)) => println!("Connection error: {}", msg),
+    Err(SdkError::RateLimited) => println!("Rate limited, back off"),
+    Err(e) => println!("Error: {}", e),
+}
 ```
 
 ## Governance & Support
 
 This SDK is community supported.
 - **Issues**: Please file bug reports on GitHub.
+- **Docs**: See `docs/ARCHITECTURE.md` for technical details.
 - **Enterprise Support**: Available at [allenhark.com](https://allenhark.com).

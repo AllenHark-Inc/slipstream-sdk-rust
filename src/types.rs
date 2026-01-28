@@ -420,3 +420,99 @@ mod tests {
         assert_eq!(options.timeout_ms, 30_000);
     }
 }
+
+// ============================================================================
+// Additional Types for Architecture Compliance
+// ============================================================================
+
+/// Priority fee configuration (Architecture: Section 9)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriorityFeeConfig {
+    /// Whether priority fee optimization is enabled
+    pub enabled: bool,
+    /// Speed tier: slow, fast, ultra_fast
+    pub speed: PriorityFeeSpeed,
+    /// Maximum tip in SOL (optional cap)
+    pub max_tip: Option<f64>,
+}
+
+impl Default for PriorityFeeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            speed: PriorityFeeSpeed::Fast,
+            max_tip: None,
+        }
+    }
+}
+
+/// Priority fee speed tier
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriorityFeeSpeed {
+    /// Lower fees, slower landing
+    Slow,
+    /// Balanced fees and speed
+    Fast,
+    /// Highest fees, fastest landing
+    UltraFast,
+}
+
+/// Connection status for state tracking (Architecture: Section 9)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionStatus {
+    /// Current connection state
+    pub state: ConnectionState,
+    /// Active protocol
+    pub protocol: Protocol,
+    /// Current latency in milliseconds
+    pub latency_ms: u64,
+    /// Connected region
+    pub region: Option<String>,
+}
+
+/// Connection state machine states
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionState {
+    /// Not yet connected
+    Disconnected,
+    /// Attempting to connect
+    Connecting,
+    /// Successfully connected
+    Connected,
+    /// Connection error occurred
+    Error,
+}
+
+/// Retry backoff strategy
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackoffStrategy {
+    /// Linear backoff (delay * attempt)
+    Linear,
+    /// Exponential backoff (delay * 2^attempt)
+    Exponential,
+}
+
+impl Default for BackoffStrategy {
+    fn default() -> Self {
+        BackoffStrategy::Exponential
+    }
+}
+
+/// Performance metrics for SDK operations (Architecture: Section 9)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformanceMetrics {
+    /// Total transactions submitted
+    pub transactions_submitted: u64,
+    /// Total transactions confirmed
+    pub transactions_confirmed: u64,
+    /// Average submission latency in ms
+    pub average_latency_ms: f64,
+    /// Success rate (0.0 - 1.0)
+    pub success_rate: f64,
+}

@@ -28,9 +28,11 @@ use crate::config::Config;
 use crate::connection::{FallbackChain, Transport};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    ConnectionInfo, LeaderHint, PriorityFee, SubmitOptions, TipInstruction, TransactionResult,
+    ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint, PerformanceMetrics,
+    PriorityFee, SubmitOptions, TipInstruction, TransactionResult,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 
@@ -39,6 +41,17 @@ pub struct SlipstreamClient {
     config: Config,
     transport: Arc<RwLock<Box<dyn Transport>>>,
     connection_info: ConnectionInfo,
+    /// Cached latest tip instruction
+    latest_tip: Arc<RwLock<Option<TipInstruction>>>,
+    /// Performance metrics
+    metrics: Arc<ClientMetrics>,
+}
+
+/// Internal metrics tracking
+struct ClientMetrics {
+    transactions_submitted: AtomicU64,
+    transactions_confirmed: AtomicU64,
+    total_latency_ms: AtomicU64,
 }
 
 impl SlipstreamClient {
@@ -76,6 +89,12 @@ impl SlipstreamClient {
             config,
             transport,
             connection_info,
+            latest_tip: Arc::new(RwLock::new(None)),
+            metrics: Arc::new(ClientMetrics {
+                transactions_submitted: AtomicU64::new(0),
+                transactions_confirmed: AtomicU64::new(0),
+                total_latency_ms: AtomicU64::new(0),
+            }),
         })
     }
 
@@ -181,6 +200,48 @@ impl SlipstreamClient {
         debug!("Subscribing to priority fees");
         let transport = self.transport.read().await;
         transport.subscribe_priority_fees().await
+    }
+
+    /// Get the latest cached tip instruction
+    ///
+    /// Returns the most recent tip instruction received from the server.
+    /// This is useful for building transactions with the recommended tip.
+    pub async fn get_latest_tip(&self) -> Option<TipInstruction> {
+        self.latest_tip.read().await.clone()
+    }
+
+    /// Update the cached latest tip (called internally by subscription)
+    pub(crate) async fn set_latest_tip(&self, tip: TipInstruction) {
+        let mut latest = self.latest_tip.write().await;
+        *latest = Some(tip);
+    }
+
+    /// Get current connection status
+    pub async fn connection_status(&self) -> ConnectionStatus {
+        let transport = self.transport.read().await;
+        let is_connected = transport.is_connected();
+        let protocol = transport.protocol();
+        
+        ConnectionStatus {
+            state: if is_connected { ConnectionState::Connected } else { ConnectionState::Disconnected },
+            protocol,
+            latency_ms: 0, // TODO: Implement latency tracking
+            region: self.connection_info.region.clone(),
+        }
+    }
+
+    /// Get performance metrics
+    pub fn metrics(&self) -> PerformanceMetrics {
+        let submitted = self.metrics.transactions_submitted.load(Ordering::Relaxed);
+        let confirmed = self.metrics.transactions_confirmed.load(Ordering::Relaxed);
+        let total_latency = self.metrics.total_latency_ms.load(Ordering::Relaxed);
+        
+        PerformanceMetrics {
+            transactions_submitted: submitted,
+            transactions_confirmed: confirmed,
+            average_latency_ms: if submitted > 0 { total_latency as f64 / submitted as f64 } else { 0.0 },
+            success_rate: if submitted > 0 { confirmed as f64 / submitted as f64 } else { 0.0 },
+        }
     }
 }
 

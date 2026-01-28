@@ -1,7 +1,7 @@
 //! Configuration types for the Slipstream SDK
 
 use crate::error::{Result, SdkError};
-pub use crate::types::{Protocol, WorkerEndpoint};
+pub use crate::types::{BackoffStrategy, PriorityFeeConfig, Protocol, WorkerEndpoint};
 use std::time::Duration;
 
 /// Default connection timeout (10 seconds)
@@ -51,6 +51,18 @@ pub struct Config {
 
     /// Selected worker endpoint (override default discovery)
     pub selected_worker: Option<WorkerEndpoint>,
+
+    /// Priority fee configuration
+    pub priority_fee: PriorityFeeConfig,
+
+    /// Retry backoff strategy
+    pub retry_backoff: BackoffStrategy,
+
+    /// Minimum confidence threshold for leader hints (0-100)
+    pub min_confidence: u32,
+
+    /// Idle timeout for connection (None = no timeout)
+    pub idle_timeout: Option<Duration>,
 }
 
 /// Protocol timeout configuration
@@ -130,6 +142,10 @@ pub struct ConfigBuilder {
     protocol_timeouts: Option<ProtocolTimeouts>,
     preferred_protocol: Option<Protocol>,
     selected_worker: Option<WorkerEndpoint>,
+    priority_fee: Option<PriorityFeeConfig>,
+    retry_backoff: Option<BackoffStrategy>,
+    min_confidence: Option<u32>,
+    idle_timeout: Option<Duration>,
 }
 
 impl ConfigBuilder {
@@ -193,6 +209,30 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set priority fee configuration
+    pub fn priority_fee(mut self, config: PriorityFeeConfig) -> Self {
+        self.priority_fee = Some(config);
+        self
+    }
+
+    /// Set retry backoff strategy
+    pub fn retry_backoff(mut self, strategy: BackoffStrategy) -> Self {
+        self.retry_backoff = Some(strategy);
+        self
+    }
+
+    /// Set minimum confidence threshold for leader hints
+    pub fn min_confidence(mut self, confidence: u32) -> Self {
+        self.min_confidence = Some(confidence);
+        self
+    }
+
+    /// Set idle timeout for connection
+    pub fn idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = Some(timeout);
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> Result<Config> {
         let config = Config {
@@ -209,6 +249,10 @@ impl ConfigBuilder {
             protocol_timeouts: self.protocol_timeouts.unwrap_or_default(),
             preferred_protocol: self.preferred_protocol,
             selected_worker: self.selected_worker,
+            priority_fee: self.priority_fee.unwrap_or_default(),
+            retry_backoff: self.retry_backoff.unwrap_or_default(),
+            min_confidence: self.min_confidence.unwrap_or(70),
+            idle_timeout: self.idle_timeout,
         };
 
         config.validate()?;
