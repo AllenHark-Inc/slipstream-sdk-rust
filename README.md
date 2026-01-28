@@ -1,6 +1,6 @@
 # allenhark-slipstream
 
-Rust SDK for Slipstream - Solana transaction relay.
+Rust SDK for Slipstream - Solana transaction relay. 
 
 ## Installation
 
