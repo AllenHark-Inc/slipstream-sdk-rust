@@ -40,3 +40,7 @@ async fn main() -> anyhow::Result<()> {
 - **Streaming Tips** - Real-time tip updates
 
 ## Documentation
+
+## Governance & Support
+
+This SDK is community supported. Enterprise support is available at [allenhark.com](https://allenhark.com).
