@@ -579,6 +579,8 @@ impl Transport for QuicTransport {
                 metadata: crate::types::LeaderHintMetadata {
                     tpu_rtt_ms: 0,
                     region_score: confidence as f64 / 100.0,
+                    leader_tpu_address: None,
+                    region_rtt_ms: None,
                 },
             })
         })

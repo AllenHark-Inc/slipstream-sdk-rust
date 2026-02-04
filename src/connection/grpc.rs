@@ -70,9 +70,13 @@ impl GrpcTransport {
             metadata: proto.metadata.map(|m| LeaderHintMetadata {
                 tpu_rtt_ms: m.tpu_rtt_ms,
                 region_score: m.region_score,
+                leader_tpu_address: None,
+                region_rtt_ms: None,
             }).unwrap_or(LeaderHintMetadata {
                 tpu_rtt_ms: 0,
                 region_score: 0.0,
+                leader_tpu_address: None,
+                region_rtt_ms: None,
             }),
         }
     }

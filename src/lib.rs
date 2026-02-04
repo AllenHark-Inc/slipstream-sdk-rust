@@ -78,17 +78,20 @@ pub mod client;
 pub mod config;
 pub mod connection;
 pub mod error;
+pub mod multi_region;
 pub mod types;
 
 // Re-export main types for convenience
 pub use client::SlipstreamClient;
 pub use config::{BackoffStrategy, Config, ConfigBuilder, PriorityFeeConfig, Protocol, ProtocolTimeouts};
 pub use error::{Result, SdkError};
+pub use multi_region::MultiRegionClient;
 pub use types::{
-    AlternativeSender, Balance, ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint,
-    LeaderHintMetadata, PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo,
-    RoutingInfo, SubmitOptions, TipInstruction, TopUpInfo, TransactionError, TransactionResult,
-    TransactionStatus, UsageEntry, UsageHistoryOptions,
+    AlternativeSender, Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
+    LeaderHint, LeaderHintMetadata, MultiRegionConfig, PerformanceMetrics, PriorityFee,
+    PriorityFeeSpeed, RateLimitInfo, RegionStatus, RoutingInfo, RoutingRecommendation,
+    SubmitOptions, TipInstruction, TopUpInfo, TransactionError, TransactionResult,
+    TransactionStatus, UsageEntry, UsageHistoryOptions, WorkerEndpoint,
 };
 
 /// SDK version

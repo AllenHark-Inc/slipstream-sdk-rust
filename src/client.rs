@@ -28,12 +28,13 @@ use crate::config::Config;
 use crate::connection::{FallbackChain, Transport};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    Balance, ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint, PerformanceMetrics,
-    PriorityFee, SubmitOptions, TipInstruction, TopUpInfo, TransactionResult, UsageEntry,
-    UsageHistoryOptions,
+    Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy, LeaderHint,
+    PerformanceMetrics, PriorityFee, RoutingRecommendation, SubmitOptions, TipInstruction,
+    TopUpInfo, TransactionResult, UsageEntry, UsageHistoryOptions,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 
@@ -55,6 +56,7 @@ struct ClientMetrics {
     transactions_submitted: AtomicU64,
     transactions_confirmed: AtomicU64,
     total_latency_ms: AtomicU64,
+    last_latency_ms: AtomicU64,
 }
 
 impl SlipstreamClient {
@@ -103,6 +105,7 @@ impl SlipstreamClient {
                 transactions_submitted: AtomicU64::new(0),
                 transactions_confirmed: AtomicU64::new(0),
                 total_latency_ms: AtomicU64::new(0),
+                last_latency_ms: AtomicU64::new(0),
             }),
         })
     }
@@ -165,8 +168,20 @@ impl SlipstreamClient {
             "Submitting transaction"
         );
 
+        let start = Instant::now();
         let transport = self.transport.read().await;
-        transport.submit_transaction(transaction, options).await
+        let result = transport.submit_transaction(transaction, options).await;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        self.metrics.last_latency_ms.store(elapsed_ms, Ordering::Relaxed);
+        self.metrics.transactions_submitted.fetch_add(1, Ordering::Relaxed);
+        self.metrics.total_latency_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
+
+        if result.is_ok() {
+            self.metrics.transactions_confirmed.fetch_add(1, Ordering::Relaxed);
+        }
+
+        result
     }
 
     /// Subscribe to leader hints stream
@@ -230,12 +245,87 @@ impl SlipstreamClient {
         let transport = self.transport.read().await;
         let is_connected = transport.is_connected();
         let protocol = transport.protocol();
-        
+
         ConnectionStatus {
             state: if is_connected { ConnectionState::Connected } else { ConnectionState::Disconnected },
             protocol,
-            latency_ms: 0, // TODO: Implement latency tracking
+            latency_ms: self.metrics.last_latency_ms.load(Ordering::Relaxed),
             region: self.connection_info.region.clone(),
+        }
+    }
+
+    // ========================================================================
+    // Multi-Region Routing Methods
+    // ========================================================================
+
+    /// Get routing recommendation for leader-aware transaction submission
+    ///
+    /// Returns the best region for the current leader validator, along with
+    /// fallback options and confidence scores. This is useful for bots that
+    /// want to dynamically route transactions based on validator proximity.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use allenhark_slipstream::{Config, SlipstreamClient};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let config = Config::builder().api_key("test").build()?;
+    /// # let client = SlipstreamClient::connect(config).await?;
+    /// let recommendation = client.get_routing_recommendation().await?;
+    /// println!("Best region: {} (confidence: {}%)",
+    ///     recommendation.best_region, recommendation.confidence);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_routing_recommendation(&self) -> Result<RoutingRecommendation> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/routing/recommendation", base_url);
+        debug!(url = %url, "Fetching routing recommendation");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            // If the endpoint doesn't exist, return a default recommendation
+            // based on current connection info
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                debug!("Routing endpoint not available, using local fallback");
+                return Ok(self.create_local_routing_recommendation().await);
+            }
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to fetch routing recommendation: {}",
+                error_text
+            )));
+        }
+
+        let recommendation: RoutingRecommendation = response.json().await?;
+        Ok(recommendation)
+    }
+
+    /// Create a local routing recommendation when server endpoint is unavailable
+    async fn create_local_routing_recommendation(&self) -> RoutingRecommendation {
+        RoutingRecommendation {
+            best_region: self
+                .connection_info
+                .region
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            leader_pubkey: None,
+            slot: 0,
+            confidence: 50, // Low confidence for local fallback
+            expected_rtt_ms: None,
+            fallback_regions: vec![],
+            fallback_strategy: FallbackStrategy::Retry,
+            valid_for_ms: 1000,
         }
     }
 

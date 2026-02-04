@@ -30,10 +30,16 @@ pub struct LeaderHint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderHintMetadata {
-    /// TPU round-trip time in milliseconds
+    /// TPU round-trip time in milliseconds (from preferred region)
     pub tpu_rtt_ms: u32,
     /// Region score
     pub region_score: f64,
+    /// Leader validator's TPU address (ip:port)
+    #[serde(default)]
+    pub leader_tpu_address: Option<String>,
+    /// Per-region RTT to the leader (region_id -> rtt_ms)
+    #[serde(default)]
+    pub region_rtt_ms: Option<std::collections::HashMap<String, u32>>,
 }
 
 /// Tip instruction for transaction building
@@ -383,6 +389,36 @@ mod tests {
         assert_eq!(hint.preferred_region, "us-west");
         assert_eq!(hint.confidence, 87);
         assert_eq!(hint.metadata.tpu_rtt_ms, 12);
+        assert!(hint.metadata.leader_tpu_address.is_none());
+        assert!(hint.metadata.region_rtt_ms.is_none());
+    }
+
+    #[test]
+    fn test_leader_hint_with_extended_metadata() {
+        let json = r#"{
+            "timestamp": 1706011200000,
+            "slot": 12345678,
+            "expiresAtSlot": 12345682,
+            "preferredRegion": "us-west",
+            "backupRegions": ["eu-central", "asia-east"],
+            "confidence": 92,
+            "leaderPubkey": "Vote111111111111111111111111111111111111111",
+            "metadata": {
+                "tpuRttMs": 8,
+                "regionScore": 0.92,
+                "leaderTpuAddress": "192.168.1.100:8004",
+                "regionRttMs": {"us-west": 8, "eu-central": 45, "asia-east": 120}
+            }
+        }"#;
+
+        let hint: LeaderHint = serde_json::from_str(json).unwrap();
+        assert_eq!(hint.preferred_region, "us-west");
+        assert_eq!(hint.confidence, 92);
+        assert_eq!(hint.leader_pubkey, Some("Vote111111111111111111111111111111111111111".to_string()));
+        assert_eq!(hint.metadata.leader_tpu_address, Some("192.168.1.100:8004".to_string()));
+        let region_rtt = hint.metadata.region_rtt_ms.unwrap();
+        assert_eq!(region_rtt.get("us-west"), Some(&8));
+        assert_eq!(region_rtt.get("eu-central"), Some(&45));
     }
 
     #[test]
@@ -422,6 +458,155 @@ mod tests {
         assert_eq!(options.max_retries, 2);
         assert_eq!(options.timeout_ms, 30_000);
     }
+
+    #[test]
+    fn test_routing_recommendation_deserialize() {
+        let json = r#"{
+            "bestRegion": "us-west",
+            "leaderPubkey": "Vote111111111111111111111111111111111111111",
+            "slot": 12345678,
+            "confidence": 85,
+            "expectedRttMs": 12,
+            "fallbackRegions": ["eu-central", "asia-east"],
+            "fallbackStrategy": "sequential",
+            "validForMs": 400
+        }"#;
+
+        let rec: RoutingRecommendation = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.best_region, "us-west");
+        assert_eq!(rec.confidence, 85);
+        assert_eq!(rec.fallback_strategy, FallbackStrategy::Sequential);
+        assert_eq!(rec.fallback_regions.len(), 2);
+    }
+
+    #[test]
+    fn test_multi_region_config_default() {
+        let config = MultiRegionConfig::default();
+        assert!(config.auto_follow_leader);
+        assert_eq!(config.min_switch_confidence, 60);
+        assert_eq!(config.switch_cooldown_ms, 500);
+        assert!(!config.broadcast_high_priority);
+        assert_eq!(config.max_broadcast_regions, 3);
+    }
+
+    #[test]
+    fn test_fallback_strategy_default() {
+        let strategy = FallbackStrategy::default();
+        assert_eq!(strategy, FallbackStrategy::Sequential);
+    }
+}
+
+// ============================================================================
+// Multi-Region Routing Types
+// ============================================================================
+
+/// Routing recommendation for leader-aware transaction submission
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingRecommendation {
+    /// Best region for current leader
+    pub best_region: String,
+    /// Current leader validator pubkey
+    pub leader_pubkey: Option<String>,
+    /// Current slot
+    pub slot: u64,
+    /// Confidence in recommendation (0-100)
+    pub confidence: u32,
+    /// Expected RTT to leader TPU from best region (ms)
+    pub expected_rtt_ms: Option<u32>,
+    /// Fallback regions in priority order
+    pub fallback_regions: Vec<String>,
+    /// Fallback strategy recommendation
+    pub fallback_strategy: FallbackStrategy,
+    /// Time until this recommendation expires (ms)
+    pub valid_for_ms: u64,
+}
+
+/// Strategy for handling fallback when primary region fails
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackStrategy {
+    /// Use next region in fallback list
+    Sequential,
+    /// Broadcast to all regions simultaneously
+    Broadcast,
+    /// Retry same region with exponential backoff
+    Retry,
+    /// No fallback - fail immediately
+    None,
+}
+
+impl Default for FallbackStrategy {
+    fn default() -> Self {
+        FallbackStrategy::Sequential
+    }
+}
+
+/// Configuration for multi-region client behavior
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiRegionConfig {
+    /// Whether to automatically follow leader hints
+    #[serde(default = "default_auto_follow")]
+    pub auto_follow_leader: bool,
+    /// Minimum confidence to switch regions (0-100)
+    #[serde(default = "default_min_confidence")]
+    pub min_switch_confidence: u32,
+    /// Cooldown between region switches (ms)
+    #[serde(default = "default_switch_cooldown")]
+    pub switch_cooldown_ms: u64,
+    /// Whether to use broadcast mode for high-priority transactions
+    #[serde(default)]
+    pub broadcast_high_priority: bool,
+    /// Maximum regions to use in broadcast mode
+    #[serde(default = "default_max_broadcast_regions")]
+    pub max_broadcast_regions: usize,
+}
+
+fn default_auto_follow() -> bool {
+    true
+}
+
+fn default_min_confidence() -> u32 {
+    60
+}
+
+fn default_switch_cooldown() -> u64 {
+    500
+}
+
+fn default_max_broadcast_regions() -> usize {
+    3
+}
+
+impl Default for MultiRegionConfig {
+    fn default() -> Self {
+        Self {
+            auto_follow_leader: default_auto_follow(),
+            min_switch_confidence: default_min_confidence(),
+            switch_cooldown_ms: default_switch_cooldown(),
+            broadcast_high_priority: false,
+            max_broadcast_regions: default_max_broadcast_regions(),
+        }
+    }
+}
+
+/// Region status for multi-region routing decisions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionStatus {
+    /// Region identifier
+    pub region_id: String,
+    /// Whether region is currently available
+    pub available: bool,
+    /// Current latency to region (ms)
+    pub latency_ms: Option<u32>,
+    /// Estimated RTT to current leader from this region (ms)
+    pub leader_rtt_ms: Option<u32>,
+    /// Region score (0.0 - 1.0)
+    pub score: Option<f64>,
+    /// Number of available workers in region
+    pub worker_count: u32,
 }
 
 // ============================================================================

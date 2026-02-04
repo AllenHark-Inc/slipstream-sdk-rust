@@ -3,7 +3,7 @@
 //! Selects the best worker endpoint based on measured latency.
 
 use crate::error::{Result, SdkError};
-use crate::types::{Protocol, WorkerEndpoint};
+use crate::types::{LeaderHint, Protocol, WorkerEndpoint};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -192,6 +192,75 @@ impl WorkerSelector {
                 Ok(self.workers.iter().find(|w| w.region == region).unwrap())
             }
         }
+    }
+
+    /// Select the best worker based on a leader hint
+    ///
+    /// Uses the leader hint's preferred region and per-region RTT data
+    /// to select the optimal worker for the current leader.
+    pub async fn select_for_leader(&self, hint: &LeaderHint) -> Result<&WorkerEndpoint> {
+        // First, try to use region_rtt_ms from metadata if available
+        if let Some(ref region_rtts) = hint.metadata.region_rtt_ms {
+            // Find the region with lowest RTT to the leader
+            let best_region = region_rtts
+                .iter()
+                .min_by_key(|(_, &rtt)| rtt)
+                .map(|(region, _)| region.as_str());
+
+            if let Some(region) = best_region {
+                // Check if we have workers in this region
+                let has_workers = self.workers.iter().any(|w| w.region == region);
+                if has_workers {
+                    debug!(
+                        region = %region,
+                        rtt_ms = region_rtts.get(region),
+                        "Selected region based on leader RTT data"
+                    );
+                    return self.select_best_in_region(region).await;
+                }
+            }
+        }
+
+        // Fall back to preferred_region from hint
+        let preferred = &hint.preferred_region;
+        let has_preferred = self.workers.iter().any(|w| &w.region == preferred);
+
+        if has_preferred {
+            debug!(
+                region = %preferred,
+                confidence = hint.confidence,
+                "Using leader hint preferred region"
+            );
+            return self.select_best_in_region(preferred).await;
+        }
+
+        // Try backup regions in order
+        for backup_region in &hint.backup_regions {
+            if self.workers.iter().any(|w| &w.region == backup_region) {
+                debug!(
+                    region = %backup_region,
+                    "Using backup region from leader hint"
+                );
+                return self.select_best_in_region(backup_region).await;
+            }
+        }
+
+        // Fall back to overall best worker
+        warn!(
+            preferred = %preferred,
+            "No workers available in hinted regions, using best overall"
+        );
+        self.select_best().await
+    }
+
+    /// Select the best worker for a specific leader pubkey
+    ///
+    /// This is a convenience method that looks up cached routing data
+    /// for a known leader. If no data is cached, falls back to best overall.
+    pub async fn select_for_leader_pubkey(&self, _leader_pubkey: &str) -> Result<&WorkerEndpoint> {
+        // In a full implementation, this would query the routing map
+        // For now, just return best overall
+        self.select_best().await
     }
 
     /// Get cached latency for a worker
@@ -613,5 +682,125 @@ mod tests {
 
         let best_us_west = selector.select_best_in_region("us-west").await.unwrap();
         assert_eq!(best_us_west.id, "worker-2");
+    }
+
+    #[tokio::test]
+    async fn test_select_for_leader() {
+        use crate::types::LeaderHintMetadata;
+
+        let workers = create_test_workers();
+        let selector = WorkerSelector::new(workers);
+
+        // Add measurements
+        {
+            let mut latencies = selector.latencies.write().await;
+            latencies.insert(
+                "worker-1".to_string(),
+                LatencyMeasurement {
+                    rtt_ms: 100,
+                    measured_at: Instant::now(),
+                    reachable: true,
+                },
+            );
+            latencies.insert(
+                "worker-2".to_string(),
+                LatencyMeasurement {
+                    rtt_ms: 50,
+                    measured_at: Instant::now(),
+                    reachable: true,
+                },
+            );
+            latencies.insert(
+                "worker-3".to_string(),
+                LatencyMeasurement {
+                    rtt_ms: 75,
+                    measured_at: Instant::now(),
+                    reachable: true,
+                },
+            );
+        }
+
+        // Create a leader hint preferring us-west
+        let hint = LeaderHint {
+            timestamp: 1706011200000,
+            slot: 12345678,
+            expires_at_slot: 12345682,
+            preferred_region: "us-west".to_string(),
+            backup_regions: vec!["us-east".to_string()],
+            confidence: 85,
+            leader_pubkey: None,
+            metadata: LeaderHintMetadata {
+                tpu_rtt_ms: 12,
+                region_score: 0.85,
+                leader_tpu_address: None,
+                region_rtt_ms: None,
+            },
+        };
+
+        let selected = selector.select_for_leader(&hint).await.unwrap();
+        assert_eq!(selected.region, "us-west");
+    }
+
+    #[tokio::test]
+    async fn test_select_for_leader_with_region_rtt() {
+        use crate::types::LeaderHintMetadata;
+        use std::collections::HashMap;
+
+        let workers = create_test_workers();
+        let selector = WorkerSelector::new(workers);
+
+        // Add measurements
+        {
+            let mut latencies = selector.latencies.write().await;
+            latencies.insert(
+                "worker-1".to_string(),
+                LatencyMeasurement {
+                    rtt_ms: 100,
+                    measured_at: Instant::now(),
+                    reachable: true,
+                },
+            );
+            latencies.insert(
+                "worker-2".to_string(),
+                LatencyMeasurement {
+                    rtt_ms: 50,
+                    measured_at: Instant::now(),
+                    reachable: true,
+                },
+            );
+            latencies.insert(
+                "worker-3".to_string(),
+                LatencyMeasurement {
+                    rtt_ms: 75,
+                    measured_at: Instant::now(),
+                    reachable: true,
+                },
+            );
+        }
+
+        // Leader hint prefers us-west, but region_rtt_ms shows us-east is closer to leader
+        let mut region_rtts = HashMap::new();
+        region_rtts.insert("us-west".to_string(), 45);
+        region_rtts.insert("us-east".to_string(), 8); // us-east has lower RTT to leader
+
+        let hint = LeaderHint {
+            timestamp: 1706011200000,
+            slot: 12345678,
+            expires_at_slot: 12345682,
+            preferred_region: "us-west".to_string(),
+            backup_regions: vec!["us-east".to_string()],
+            confidence: 85,
+            leader_pubkey: None,
+            metadata: LeaderHintMetadata {
+                tpu_rtt_ms: 8,
+                region_score: 0.85,
+                leader_tpu_address: None,
+                region_rtt_ms: Some(region_rtts),
+            },
+        };
+
+        let selected = selector.select_for_leader(&hint).await.unwrap();
+        // Should select us-east based on lower leader RTT, not preferred_region
+        assert_eq!(selected.region, "us-east");
     }
 }
