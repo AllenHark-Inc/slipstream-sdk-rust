@@ -427,6 +427,7 @@ fn parse_status(status: &str) -> TransactionStatus {
         "failed" => TransactionStatus::Failed,
         "duplicate" => TransactionStatus::Duplicate,
         "rate_limited" | "ratelimited" => TransactionStatus::RateLimited,
+        "insufficient_tokens" | "insufficienttokens" => TransactionStatus::InsufficientTokens,
         _ => TransactionStatus::Pending,
     }
 }

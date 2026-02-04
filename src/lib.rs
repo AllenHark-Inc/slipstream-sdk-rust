@@ -85,10 +85,10 @@ pub use client::SlipstreamClient;
 pub use config::{BackoffStrategy, Config, ConfigBuilder, PriorityFeeConfig, Protocol, ProtocolTimeouts};
 pub use error::{Result, SdkError};
 pub use types::{
-    AlternativeSender, ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint,
+    AlternativeSender, Balance, ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint,
     LeaderHintMetadata, PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo,
-    RoutingInfo, SubmitOptions, TipInstruction, TransactionError, TransactionResult,
-    TransactionStatus,
+    RoutingInfo, SubmitOptions, TipInstruction, TopUpInfo, TransactionError, TransactionResult,
+    TransactionStatus, UsageEntry, UsageHistoryOptions,
 };
 
 /// SDK version

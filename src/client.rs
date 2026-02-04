@@ -28,8 +28,9 @@ use crate::config::Config;
 use crate::connection::{FallbackChain, Transport};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint, PerformanceMetrics,
-    PriorityFee, SubmitOptions, TipInstruction, TransactionResult,
+    Balance, ConnectionInfo, ConnectionState, ConnectionStatus, LeaderHint, PerformanceMetrics,
+    PriorityFee, SubmitOptions, TipInstruction, TopUpInfo, TransactionResult, UsageEntry,
+    UsageHistoryOptions,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,6 +42,8 @@ pub struct SlipstreamClient {
     config: Config,
     transport: Arc<RwLock<Box<dyn Transport>>>,
     connection_info: ConnectionInfo,
+    /// HTTP client for REST API calls (billing, etc.)
+    http_client: reqwest::Client,
     /// Cached latest tip instruction
     latest_tip: Arc<RwLock<Option<TipInstruction>>>,
     /// Performance metrics
@@ -85,10 +88,16 @@ impl SlipstreamClient {
         let monitor = crate::connection::health::HealthMonitor::new(config.clone(), transport.clone());
         monitor.start();
 
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| SdkError::connection(format!("Failed to create HTTP client: {}", e)))?;
+
         Ok(Self {
             config,
             transport,
             connection_info,
+            http_client,
             latest_tip: Arc::new(RwLock::new(None)),
             metrics: Arc::new(ClientMetrics {
                 transactions_submitted: AtomicU64::new(0),
@@ -228,6 +237,122 @@ impl SlipstreamClient {
             latency_ms: 0, // TODO: Implement latency tracking
             region: self.connection_info.region.clone(),
         }
+    }
+
+    // ========================================================================
+    // Token Billing Methods
+    // ========================================================================
+
+    /// Get token balance for the authenticated API key
+    ///
+    /// Returns the current balance in SOL, tokens, and lamports.
+    pub async fn get_balance(&self) -> Result<Balance> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/balance", base_url);
+        debug!(url = %url, "Fetching token balance");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!("Failed to fetch balance: {}", error_text)));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+
+        let balance_lamports = body["balance_lamports"].as_i64().unwrap_or(0);
+        let cost_per_query = 50_000i64; // 50,000 lamports per query
+        let grace_limit = 1_000_000i64; // 1M lamports grace
+
+        Ok(Balance {
+            balance_sol: balance_lamports as f64 / 1_000_000_000.0,
+            balance_tokens: balance_lamports / cost_per_query,
+            balance_lamports,
+            grace_remaining_tokens: (balance_lamports + grace_limit) / cost_per_query,
+        })
+    }
+
+    /// Get deposit address for topping up the token balance
+    ///
+    /// Returns the Solana wallet address where SOL can be sent
+    /// and the minimum top-up amount.
+    pub async fn get_deposit_address(&self) -> Result<TopUpInfo> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/deposit-address", base_url);
+        debug!(url = %url, "Fetching deposit address");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!("Failed to fetch deposit address: {}", error_text)));
+        }
+
+        let info: TopUpInfo = response.json().await?;
+        Ok(info)
+    }
+
+    /// Get token usage history for the authenticated API key
+    ///
+    /// Returns a paginated list of token transactions (debits, credits, deposits).
+    pub async fn get_usage_history(&self, options: UsageHistoryOptions) -> Result<Vec<UsageEntry>> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let mut url = format!("{}/v1/usage-history", base_url);
+
+        let mut params = Vec::new();
+        if let Some(limit) = options.limit {
+            params.push(format!("limit={}", limit));
+        }
+        if let Some(offset) = options.offset {
+            params.push(format!("offset={}", offset));
+        }
+        if !params.is_empty() {
+            url = format!("{}?{}", url, params.join("&"));
+        }
+
+        debug!(url = %url, "Fetching usage history");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!("Failed to fetch usage history: {}", error_text)));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let entries: Vec<UsageEntry> = serde_json::from_value(
+            body["entries"].clone(),
+        )
+        .unwrap_or_default();
+
+        Ok(entries)
     }
 
     /// Get performance metrics

@@ -137,6 +137,8 @@ pub enum TransactionStatus {
     Duplicate,
     /// Rate limited
     RateLimited,
+    /// Insufficient token balance
+    InsufficientTokens,
 }
 
 impl TransactionStatus {
@@ -148,6 +150,7 @@ impl TransactionStatus {
                 | TransactionStatus::Failed
                 | TransactionStatus::Duplicate
                 | TransactionStatus::RateLimited
+                | TransactionStatus::InsufficientTokens
         )
     }
 
@@ -419,6 +422,61 @@ mod tests {
         assert_eq!(options.max_retries, 2);
         assert_eq!(options.timeout_ms, 30_000);
     }
+}
+
+// ============================================================================
+// Token Billing Types
+// ============================================================================
+
+/// Token balance information for the authenticated API key
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Balance {
+    /// Balance in SOL
+    pub balance_sol: f64,
+    /// Balance in tokens (1 token = 1 query)
+    pub balance_tokens: i64,
+    /// Balance in lamports
+    pub balance_lamports: i64,
+    /// Grace period remaining in tokens (negative = in grace period)
+    pub grace_remaining_tokens: i64,
+}
+
+/// Deposit address for topping up token balance
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TopUpInfo {
+    /// Solana deposit wallet address (base58)
+    pub deposit_wallet: String,
+    /// Minimum top-up amount in SOL
+    pub min_amount_sol: f64,
+    /// Minimum top-up amount in lamports
+    pub min_amount_lamports: u64,
+}
+
+/// A single usage/billing ledger entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UsageEntry {
+    /// Entry timestamp (unix millis)
+    pub timestamp: u64,
+    /// Transaction type (e.g. "usage_debit", "admin_credit", "deposit")
+    pub tx_type: String,
+    /// Amount in lamports (positive for credits, negative for debits)
+    pub amount_lamports: i64,
+    /// Balance after this transaction in lamports
+    pub balance_after_lamports: i64,
+    /// Human-readable description
+    pub description: Option<String>,
+}
+
+/// Options for querying usage history
+#[derive(Debug, Clone, Default)]
+pub struct UsageHistoryOptions {
+    /// Maximum number of entries to return (default: 50, max: 100)
+    pub limit: Option<u32>,
+    /// Offset for pagination
+    pub offset: Option<u32>,
 }
 
 // ============================================================================

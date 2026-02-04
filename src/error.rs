@@ -46,6 +46,10 @@ pub enum SdkError {
     #[error("Stream closed")]
     StreamClosed,
 
+    /// Insufficient token balance
+    #[error("Insufficient token balance")]
+    InsufficientTokens,
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),
