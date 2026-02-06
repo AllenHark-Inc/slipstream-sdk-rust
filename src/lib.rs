@@ -77,6 +77,7 @@
 pub mod client;
 pub mod config;
 pub mod connection;
+pub mod discovery;
 pub mod error;
 pub mod multi_region;
 pub mod types;

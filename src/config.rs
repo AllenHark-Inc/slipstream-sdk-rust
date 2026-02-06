@@ -28,6 +28,9 @@ pub struct Config {
     /// Custom endpoint URL (optional, auto-discover if not set)
     pub endpoint: Option<String>,
 
+    /// Discovery service URL (defaults to https://discovery.slipstream.allenhark.com)
+    pub discovery_url: String,
+
     /// Connection timeout
     pub connection_timeout: Duration,
 
@@ -134,6 +137,7 @@ pub struct ConfigBuilder {
     api_key: Option<String>,
     region: Option<String>,
     endpoint: Option<String>,
+    discovery_url: Option<String>,
     connection_timeout: Option<Duration>,
     max_retries: Option<u32>,
     leader_hints: Option<bool>,
@@ -161,9 +165,15 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set a custom endpoint URL
+    /// Set a custom endpoint URL (overrides discovery)
     pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Set a custom discovery URL (default: https://discovery.slipstream.allenhark.com)
+    pub fn discovery_url(mut self, url: impl Into<String>) -> Self {
+        self.discovery_url = Some(url.into());
         self
     }
 
@@ -239,6 +249,9 @@ impl ConfigBuilder {
             api_key: self.api_key.ok_or_else(|| SdkError::config("api_key is required"))?,
             region: self.region,
             endpoint: self.endpoint,
+            discovery_url: self.discovery_url.unwrap_or_else(|| {
+                crate::discovery::DEFAULT_DISCOVERY_URL.to_string()
+            }),
             connection_timeout: self
                 .connection_timeout
                 .unwrap_or_else(|| Duration::from_millis(DEFAULT_CONNECTION_TIMEOUT_MS)),

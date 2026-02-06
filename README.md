@@ -40,25 +40,33 @@ tokio = { version = "1.0", features = ["full"] }
 
 ### Connecting
 
-The `SlipstreamClient` handles connection logic, authentication, and worker selection automatically.
+The `SlipstreamClient` automatically discovers available workers via the discovery service and connects directly to the best worker's IP address. No manual endpoint configuration needed.
 
 ```rust
 use allenhark_slipstream::{Config, SlipstreamClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Basic connectivity
+    // Just an API key — discovery handles the rest
     let config = Config::builder()
-        .api_key("sk_test_12345678") // Your API Key
-        .region("us-east")           // Optional: Prefer a specific region
+        .api_key("sk_live_12345678")
         .build()?;
 
     let client = SlipstreamClient::connect(config).await?;
-    
+
     println!("Connected via: {}", client.connection_info().protocol);
-    
+
     Ok(())
 }
+```
+
+Optionally prefer a specific region:
+
+```rust
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .region("us-east")  // Optional: prefer this region
+    .build()?;
 ```
 
 ### Submitting a Transaction
@@ -115,7 +123,8 @@ The `Config::builder()` provides a fluent interface for configuration:
 |--------|-------------|---------|
 | `api_key` | **Required.** Your authentication key. | - |
 | `region` | Preferred region (e.g., `us-east`, `eu-central`). | Auto-detect |
-| `endpoint` | Explicit URL override (disables worker selection). | None |
+| `discovery_url` | Discovery service URL for worker lookup. | `https://discovery.slipstream.allenhark.com` |
+| `endpoint` | Explicit URL override (disables discovery). | None |
 | `leader_hints` | Enable auto-subscription to leader hints. | `true` |
 | `protocol_timeouts` | Custom timeouts for QUIC, gRPC, etc. | Smart defaults |
 | `priority_fee` | Priority fee configuration (`PriorityFeeConfig`). | Disabled |
@@ -239,9 +248,33 @@ for entry in &entries {
 
 ## Architecture
 
-1.  **Worker Selection**: When you call `connect()`, the SDK queries the mesh for available workers and pings them. It selects the one with the lowest Round-Trip Time (RTT).
-2.  **Protocol Fallback**: The client attempts to connect using **QUIC**. If that fails (e.g., firewall blocked), it tries **gRPC**, then **WebSocket**, then **HTTP**.
-3.  **Authentication**: All requests are signed and authenticated using your `api_key`.
+1.  **Discovery**: When you call `connect()`, the SDK calls the discovery service (`GET /v1/discovery`) to fetch available workers across all regions, including their IP addresses and ports.
+2.  **Worker Selection**: The SDK filters workers by your preferred region (or uses the recommended region), then selects the best healthy worker.
+3.  **Protocol Fallback**: The client attempts to connect using **QUIC**. If that fails (e.g., firewall blocked), it tries **gRPC**, then **WebSocket**, then **HTTP**.
+4.  **Authentication**: All requests are signed and authenticated using your `api_key`.
+
+## Multi-Region Routing
+
+For optimal latency, use `MultiRegionClient` to automatically route transactions to the region closest to the current Solana leader:
+
+```rust
+use allenhark_slipstream::{Config, MultiRegionClient};
+
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .build()?;
+
+// Discovers workers across all regions automatically
+let multi = MultiRegionClient::connect(config).await?;
+
+// Transactions are routed to the best region based on leader hints
+let result = multi.submit_transaction(&tx_data).await?;
+
+// Check current routing decision
+if let Some(routing) = multi.get_current_routing() {
+    println!("Routing to {} (confidence: {}%)", routing.best_region, routing.confidence);
+}
+```
 
 ## Examples
 

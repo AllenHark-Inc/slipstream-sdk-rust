@@ -36,6 +36,7 @@
 
 use crate::config::Config;
 use crate::connection::selector::WorkerSelector;
+use crate::discovery::DiscoveryClient;
 use crate::error::{Result, SdkError};
 use crate::types::{
     FallbackStrategy, LeaderHint, MultiRegionConfig, RoutingRecommendation, SubmitOptions,
@@ -73,7 +74,43 @@ pub struct MultiRegionClient {
 }
 
 impl MultiRegionClient {
-    /// Create a new multi-region client
+    /// Connect using automatic worker discovery
+    ///
+    /// Discovers all available workers across regions via the discovery
+    /// service and creates a multi-region client. No manual worker
+    /// configuration is needed.
+    pub async fn connect(config: Config) -> Result<Self> {
+        Self::connect_with_config(config, MultiRegionConfig::default()).await
+    }
+
+    /// Connect with custom multi-region settings
+    pub async fn connect_with_config(
+        config: Config,
+        multi_config: MultiRegionConfig,
+    ) -> Result<Self> {
+        info!(
+            discovery_url = %config.discovery_url,
+            "Discovering workers for multi-region client"
+        );
+
+        let discovery = DiscoveryClient::new(&config.discovery_url);
+        let response = discovery.discover().await?;
+
+        let workers = DiscoveryClient::to_worker_endpoints(&response.workers);
+        if workers.is_empty() {
+            return Err(SdkError::connection("No healthy workers found via discovery"));
+        }
+
+        info!(
+            worker_count = workers.len(),
+            region_count = response.regions.len(),
+            "Discovered workers for multi-region"
+        );
+
+        Self::new(config, workers, multi_config).await
+    }
+
+    /// Create a new multi-region client with explicit worker list
     ///
     /// # Arguments
     ///

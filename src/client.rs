@@ -26,6 +26,7 @@
 
 use crate::config::Config;
 use crate::connection::{FallbackChain, Transport};
+use crate::discovery::DiscoveryClient;
 use crate::error::{Result, SdkError};
 use crate::types::{
     Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy, LeaderHint,
@@ -62,10 +63,54 @@ struct ClientMetrics {
 impl SlipstreamClient {
     /// Connect to Slipstream using the provided configuration
     ///
-    /// This will attempt to connect using the protocol fallback chain:
-    /// QUIC (2s) -> gRPC (3s) -> WebSocket (3s) -> HTTP (5s)
-    pub async fn connect(config: Config) -> Result<Self> {
+    /// If no explicit endpoint is set, the SDK automatically discovers
+    /// available workers via the discovery service, selects the best
+    /// worker based on region preference and health, and connects directly
+    /// to the worker's IP address.
+    ///
+    /// Protocol fallback chain: QUIC (2s) -> gRPC (3s) -> WebSocket (3s) -> HTTP (5s)
+    pub async fn connect(mut config: Config) -> Result<Self> {
         config.validate()?;
+
+        // If no explicit endpoint or worker is set, use discovery
+        if config.endpoint.is_none() && config.selected_worker.is_none() {
+            info!(
+                discovery_url = %config.discovery_url,
+                region = ?config.region,
+                "Discovering workers"
+            );
+
+            let discovery = DiscoveryClient::new(&config.discovery_url);
+            let response = discovery.discover().await?;
+
+            // Pick the best region
+            let region = discovery
+                .best_region(&response, config.region.as_deref())
+                .ok_or_else(|| SdkError::connection("No healthy workers found via discovery"))?;
+
+            // Get healthy workers in that region
+            let region_workers = discovery.workers_for_region(&response, &region);
+            if region_workers.is_empty() {
+                return Err(SdkError::connection(format!(
+                    "No healthy workers in region '{}'",
+                    region
+                )));
+            }
+
+            // Select the first healthy worker (latency-based selection happens at transport level)
+            let worker = &region_workers[0];
+            let endpoint = DiscoveryClient::worker_to_endpoint(worker);
+
+            info!(
+                worker_id = %endpoint.id,
+                region = %region,
+                ip = %worker.ip,
+                "Selected worker via discovery"
+            );
+
+            config.selected_worker = Some(endpoint);
+            config.region = Some(region);
+        }
 
         info!(
             region = ?config.region,
