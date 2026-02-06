@@ -156,6 +156,87 @@ println!("Submitted: {}, Success Rate: {:.1}%",
     metrics.transactions_submitted, metrics.success_rate * 100.0);
 ```
 
+## Token Billing
+
+The SDK provides methods to manage your token balance, view deposits, and track usage.
+
+### Check Balance
+
+```rust
+let balance = client.get_balance().await?;
+println!("Balance: {:.6} SOL ({} tokens)", balance.balance_sol, balance.balance_tokens);
+println!("Grace remaining: {} tokens", balance.grace_remaining_tokens);
+```
+
+### Get Deposit Address
+
+Get your deposit wallet to top up tokens by sending SOL:
+
+```rust
+let deposit = client.get_deposit_address().await?;
+println!("Send SOL to: {}", deposit.deposit_wallet);
+println!("Minimum: {:.4} SOL", deposit.min_amount_sol);
+```
+
+### Minimum Deposit
+
+Deposits must be at least **$10 USD equivalent** in SOL before tokens are credited. Deposits below this threshold are stored as pending until the cumulative total reaches $10.
+
+```rust
+let min_usd = client.get_minimum_deposit_usd(); // Returns 10.0
+
+// Check pending (uncredited) deposits
+let pending = client.get_pending_deposit().await?;
+println!("Pending: {:.6} SOL ({} deposits)", pending.pending_sol, pending.pending_count);
+```
+
+### Deposit History
+
+View all SOL deposits with their credited/pending status:
+
+```rust
+use allenhark_slipstream::types::DepositHistoryOptions;
+
+let deposits = client.get_deposit_history(DepositHistoryOptions {
+    limit: Some(20),
+    offset: None,
+}).await?;
+
+for d in &deposits {
+    println!("{} | {:.6} SOL | ${:.2} | {}",
+        &d.signature[..16], d.amount_sol,
+        d.usd_value.unwrap_or(0.0),
+        if d.credited { "CREDITED" } else { "PENDING" });
+}
+```
+
+### Usage History
+
+View token transaction history (debits, credits, deposits):
+
+```rust
+use allenhark_slipstream::types::UsageHistoryOptions;
+
+let entries = client.get_usage_history(UsageHistoryOptions {
+    limit: Some(50),
+    offset: None,
+}).await?;
+
+for entry in &entries {
+    println!("{}: {} lamports (balance: {})",
+        entry.tx_type, entry.amount_lamports, entry.balance_after_lamports);
+}
+```
+
+### Token Economics
+
+| Unit | Value |
+|------|-------|
+| 1 token | 1 query |
+| 1 token | 50,000 lamports |
+| 1 token | 0.00005 SOL |
+| Min deposit | $10 USD equivalent in SOL |
+
 ## Architecture
 
 1.  **Worker Selection**: When you call `connect()`, the SDK queries the mesh for available workers and pings them. It selects the one with the lowest Round-Trip Time (RTT).
@@ -178,6 +259,7 @@ The `examples/` directory contains comprehensive, runnable examples:
 | `deduplication.rs` | Prevent duplicate transaction submissions |
 | `streaming_callbacks.rs` | All streaming subscriptions (Rust channels) |
 | `advanced_config.rs` | Full configuration options |
+| `billing.rs` | Token balance, deposits, usage history |
 
 Run any example with:
 ```bash

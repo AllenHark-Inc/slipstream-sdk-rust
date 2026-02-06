@@ -445,6 +445,96 @@ impl SlipstreamClient {
         Ok(entries)
     }
 
+    /// Get deposit history for the authenticated API key
+    ///
+    /// Returns a list of SOL deposits with credited/pending status.
+    pub async fn get_deposit_history(
+        &self,
+        options: crate::types::DepositHistoryOptions,
+    ) -> Result<Vec<crate::types::DepositEntry>> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let mut url = format!("{}/v1/deposit-history", base_url);
+
+        let mut params = Vec::new();
+        if let Some(limit) = options.limit {
+            params.push(format!("limit={}", limit));
+        }
+        if let Some(offset) = options.offset {
+            params.push(format!("offset={}", offset));
+        }
+        if !params.is_empty() {
+            url = format!("{}?{}", url, params.join("&"));
+        }
+
+        debug!(url = %url, "Fetching deposit history");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to fetch deposit history: {}",
+                error_text
+            )));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let entries: Vec<crate::types::DepositEntry> = serde_json::from_value(
+            body["deposits"].clone(),
+        )
+        .unwrap_or_default();
+
+        Ok(entries)
+    }
+
+    /// Get pending (uncredited) deposit information
+    ///
+    /// Returns the total uncredited deposit amount and the $10 USD minimum.
+    pub async fn get_pending_deposit(&self) -> Result<crate::types::PendingDeposit> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/deposit-pending", base_url);
+        debug!(url = %url, "Fetching pending deposit info");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to fetch pending deposits: {}",
+                error_text
+            )));
+        }
+
+        let pending: crate::types::PendingDeposit = response.json().await?;
+        Ok(pending)
+    }
+
+    /// Get the minimum deposit amount in USD
+    ///
+    /// Returns the minimum USD equivalent of SOL that must be deposited
+    /// before tokens are credited. Currently $10 USD.
+    pub fn get_minimum_deposit_usd(&self) -> f64 {
+        10.0
+    }
+
     /// Get performance metrics
     pub fn metrics(&self) -> PerformanceMetrics {
         let submitted = self.metrics.transactions_submitted.load(Ordering::Relaxed);

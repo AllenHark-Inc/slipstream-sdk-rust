@@ -664,6 +664,53 @@ pub struct UsageHistoryOptions {
     pub offset: Option<u32>,
 }
 
+/// A single deposit history entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepositEntry {
+    /// On-chain transaction signature
+    pub signature: String,
+    /// Deposit amount in lamports
+    pub amount_lamports: i64,
+    /// Deposit amount in SOL
+    pub amount_sol: f64,
+    /// USD value at time of deposit
+    pub usd_value: Option<f64>,
+    /// SOL/USD price at time of deposit
+    pub sol_usd_price: Option<f64>,
+    /// Whether tokens have been credited for this deposit
+    pub credited: bool,
+    /// When tokens were credited (if credited)
+    pub credited_at: Option<String>,
+    /// Solana slot of the deposit
+    pub slot: i64,
+    /// When the deposit was detected
+    pub detected_at: String,
+    /// On-chain block timestamp
+    pub block_time: Option<String>,
+}
+
+/// Options for querying deposit history
+#[derive(Debug, Clone, Default)]
+pub struct DepositHistoryOptions {
+    /// Maximum number of entries to return (default: 50, max: 100)
+    pub limit: Option<u32>,
+    /// Offset for pagination
+    pub offset: Option<u32>,
+}
+
+/// Pending (uncredited) deposit summary
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingDeposit {
+    /// Total pending lamports
+    pub pending_lamports: i64,
+    /// Total pending SOL
+    pub pending_sol: f64,
+    /// Number of uncredited deposits
+    pub pending_count: i64,
+    /// Minimum deposit in USD to trigger crediting
+    pub minimum_deposit_usd: f64,
+}
+
 // ============================================================================
 // Additional Types for Architecture Compliance
 // ============================================================================
