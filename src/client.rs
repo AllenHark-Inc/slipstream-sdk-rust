@@ -572,6 +572,39 @@ impl SlipstreamClient {
         Ok(pending)
     }
 
+    /// Get free tier daily usage statistics
+    ///
+    /// Returns the number of transactions used today, remaining quota,
+    /// and when the counter resets (UTC midnight).
+    /// Only meaningful for keys on the 'free' tier.
+    pub async fn get_free_tier_usage(&self) -> Result<crate::types::FreeTierUsage> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/free-tier-usage", base_url);
+        debug!(url = %url, "Fetching free tier usage");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to fetch free tier usage: {}",
+                error_text
+            )));
+        }
+
+        let usage: crate::types::FreeTierUsage = response.json().await?;
+        Ok(usage)
+    }
+
     /// Get the minimum deposit amount in USD
     ///
     /// Returns the minimum USD equivalent of SOL that must be deposited

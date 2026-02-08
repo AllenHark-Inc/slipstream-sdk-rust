@@ -698,6 +698,19 @@ pub struct DepositHistoryOptions {
     pub offset: Option<u32>,
 }
 
+/// Free tier daily usage statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreeTierUsage {
+    /// Number of transactions used today
+    pub used: u32,
+    /// Remaining transactions today
+    pub remaining: u32,
+    /// Daily transaction limit
+    pub limit: u32,
+    /// When the counter resets (UTC midnight, RFC3339)
+    pub resets_at: String,
+}
+
 /// Pending (uncredited) deposit summary
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingDeposit {

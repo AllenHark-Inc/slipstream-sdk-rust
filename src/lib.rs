@@ -89,10 +89,10 @@ pub use error::{Result, SdkError};
 pub use multi_region::MultiRegionClient;
 pub use types::{
     AlternativeSender, Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
-    LeaderHint, LeaderHintMetadata, MultiRegionConfig, PerformanceMetrics, PriorityFee,
-    PriorityFeeSpeed, RateLimitInfo, RegionStatus, RoutingInfo, RoutingRecommendation,
-    SubmitOptions, TipInstruction, TopUpInfo, TransactionError, TransactionResult,
-    TransactionStatus, UsageEntry, UsageHistoryOptions, WorkerEndpoint,
+    FreeTierUsage, LeaderHint, LeaderHintMetadata, MultiRegionConfig, PerformanceMetrics,
+    PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionStatus, RoutingInfo,
+    RoutingRecommendation, SubmitOptions, TipInstruction, TopUpInfo, TransactionError,
+    TransactionResult, TransactionStatus, UsageEntry, UsageHistoryOptions, WorkerEndpoint,
 };
 
 /// SDK version

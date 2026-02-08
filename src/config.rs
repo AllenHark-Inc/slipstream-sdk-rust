@@ -66,6 +66,9 @@ pub struct Config {
 
     /// Idle timeout for connection (None = no timeout)
     pub idle_timeout: Option<Duration>,
+
+    /// Billing tier (free, standard, pro, enterprise). Default: "pro"
+    pub tier: String,
 }
 
 /// Protocol timeout configuration
@@ -150,6 +153,7 @@ pub struct ConfigBuilder {
     retry_backoff: Option<BackoffStrategy>,
     min_confidence: Option<u32>,
     idle_timeout: Option<Duration>,
+    tier: Option<String>,
 }
 
 impl ConfigBuilder {
@@ -243,6 +247,12 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set billing tier (free, standard, pro, enterprise)
+    pub fn tier(mut self, tier: impl Into<String>) -> Self {
+        self.tier = Some(tier.into());
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> Result<Config> {
         let config = Config {
@@ -266,6 +276,7 @@ impl ConfigBuilder {
             retry_backoff: self.retry_backoff.unwrap_or_default(),
             min_confidence: self.min_confidence.unwrap_or(70),
             idle_timeout: self.idle_timeout,
+            tier: self.tier.unwrap_or_else(|| "pro".to_string()),
         };
 
         config.validate()?;
