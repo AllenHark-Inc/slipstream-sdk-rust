@@ -6,8 +6,9 @@ use super::Transport;
 use crate::config::{Config, Protocol};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    AlternativeSender, ConnectionInfo, LeaderHint, LeaderHintMetadata, PriorityFee, RateLimitInfo,
-    SubmitOptions, TipInstruction, TransactionResult, TransactionStatus,
+    AlternativeSender, ConnectionInfo, LatestBlockhash, LatestSlot, LeaderHint,
+    LeaderHintMetadata, PriorityFee, RateLimitInfo, SubmitOptions, TipInstruction,
+    TransactionResult, TransactionStatus,
 };
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
@@ -72,6 +73,8 @@ enum ServerMessage {
     LeaderHint(WsLeaderHint),
     TipInstruction(WsTipInstruction),
     PriorityFee(WsPriorityFee),
+    LatestBlockhash(WsLatestBlockhash),
+    LatestSlot(WsLatestSlot),
     TransactionAccepted {
         request_id: String,
         transaction_id: String,
@@ -160,6 +163,21 @@ struct WsPriorityFee {
     landing_probability: u32,
     network_congestion: String,
     recent_success_rate: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WsLatestBlockhash {
+    blockhash: String,
+    last_valid_block_height: u64,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WsLatestSlot {
+    slot: u64,
+    timestamp: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -308,7 +326,7 @@ impl WebSocketTransport {
             preferred_region: ws.preferred_region,
             backup_regions: ws.backup_regions,
             confidence: ws.confidence,
-            leader_pubkey: ws.leader_pubkey,
+            leader_pubkey: ws.leader_pubkey.unwrap_or_default(),
             metadata: ws.metadata.map(|m| LeaderHintMetadata {
                 tpu_rtt_ms: m.tpu_rtt_ms,
                 region_score: m.region_score,
@@ -354,6 +372,23 @@ impl WebSocketTransport {
             landing_probability: ws.landing_probability,
             network_congestion: ws.network_congestion,
             recent_success_rate: ws.recent_success_rate,
+        }
+    }
+
+    /// Convert WsLatestBlockhash to SDK type
+    fn convert_latest_blockhash(ws: WsLatestBlockhash) -> LatestBlockhash {
+        LatestBlockhash {
+            blockhash: ws.blockhash,
+            last_valid_block_height: ws.last_valid_block_height,
+            timestamp: ws.timestamp,
+        }
+    }
+
+    /// Convert WsLatestSlot to SDK type
+    fn convert_latest_slot(ws: WsLatestSlot) -> LatestSlot {
+        LatestSlot {
+            slot: ws.slot,
+            timestamp: ws.timestamp,
         }
     }
 }
@@ -710,6 +745,84 @@ impl Transport for WebSocketTransport {
                     Some(ServerMessage::PriorityFee(fee)) => {
                         let sdk_fee = Self::convert_priority_fee(fee);
                         if tx.send(sdk_fee).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        self.send_message(ClientMessage::Subscribe {
+            stream: "latest_blockhash".to_string(),
+        })
+        .await?;
+
+        let (tx, rx) = mpsc::channel(32);
+        let message_rx = Arc::clone(&self.message_rx);
+
+        tokio::spawn(async move {
+            loop {
+                let msg = {
+                    let mut rx_guard = message_rx.write().await;
+                    match rx_guard.as_mut() {
+                        Some(r) => r.recv().await,
+                        None => break,
+                    }
+                };
+
+                match msg {
+                    Some(ServerMessage::LatestBlockhash(bh)) => {
+                        let sdk_bh = Self::convert_latest_blockhash(bh);
+                        if tx.send(sdk_bh).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        self.send_message(ClientMessage::Subscribe {
+            stream: "latest_slot".to_string(),
+        })
+        .await?;
+
+        let (tx, rx) = mpsc::channel(32);
+        let message_rx = Arc::clone(&self.message_rx);
+
+        tokio::spawn(async move {
+            loop {
+                let msg = {
+                    let mut rx_guard = message_rx.write().await;
+                    match rx_guard.as_mut() {
+                        Some(r) => r.recv().await,
+                        None => break,
+                    }
+                };
+
+                match msg {
+                    Some(ServerMessage::LatestSlot(slot)) => {
+                        let sdk_slot = Self::convert_latest_slot(slot);
+                        if tx.send(sdk_slot).await.is_err() {
                             break;
                         }
                     }

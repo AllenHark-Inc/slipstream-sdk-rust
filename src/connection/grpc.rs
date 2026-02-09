@@ -6,8 +6,8 @@ use super::Transport;
 use crate::config::{Config, Protocol};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    ConnectionInfo, LeaderHint, LeaderHintMetadata, PriorityFee, RateLimitInfo, SubmitOptions,
-    TipInstruction, TransactionResult, TransactionStatus,
+    ConnectionInfo, LatestBlockhash, LatestSlot, LeaderHint, LeaderHintMetadata, PriorityFee,
+    RateLimitInfo, SubmitOptions, TipInstruction, TransactionResult, TransactionStatus,
 };
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,11 +62,7 @@ impl GrpcTransport {
             preferred_region: proto.preferred_region,
             backup_regions: proto.backup_regions,
             confidence: proto.confidence,
-            leader_pubkey: if proto.leader_pubkey.is_empty() {
-                None
-            } else {
-                Some(proto.leader_pubkey)
-            },
+            leader_pubkey: proto.leader_pubkey,
             metadata: proto.metadata.map(|m| LeaderHintMetadata {
                 tpu_rtt_ms: m.tpu_rtt_ms,
                 region_score: m.region_score,
@@ -447,6 +443,18 @@ impl Transport for GrpcTransport {
         });
 
         Ok(rx)
+    }
+
+    async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>> {
+        // gRPC proto does not yet define SubscribeLatestBlockhash RPC.
+        // Use QUIC or WebSocket transport for this stream.
+        Err(SdkError::connection("latest_blockhash subscription not available via gRPC; use QUIC or WebSocket"))
+    }
+
+    async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>> {
+        // gRPC proto does not yet define SubscribeLatestSlot RPC.
+        // Use QUIC or WebSocket transport for this stream.
+        Err(SdkError::connection("latest_slot subscription not available via gRPC; use QUIC or WebSocket"))
     }
 }
 

@@ -728,7 +728,7 @@ mod tests {
             preferred_region: "us-west".to_string(),
             backup_regions: vec!["us-east".to_string()],
             confidence: 85,
-            leader_pubkey: None,
+            leader_pubkey: String::new(),
             metadata: LeaderHintMetadata {
                 tpu_rtt_ms: 12,
                 region_score: 0.85,
@@ -790,7 +790,7 @@ mod tests {
             preferred_region: "us-west".to_string(),
             backup_regions: vec!["us-east".to_string()],
             confidence: 85,
-            leader_pubkey: None,
+            leader_pubkey: String::new(),
             metadata: LeaderHintMetadata {
                 tpu_rtt_ms: 8,
                 region_score: 0.85,

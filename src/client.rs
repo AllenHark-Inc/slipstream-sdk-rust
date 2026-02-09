@@ -29,15 +29,58 @@ use crate::connection::{FallbackChain, Transport};
 use crate::discovery::DiscoveryClient;
 use crate::error::{Result, SdkError};
 use crate::types::{
-    Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy, LeaderHint,
-    PerformanceMetrics, PriorityFee, RoutingRecommendation, SubmitOptions, TipInstruction,
-    TopUpInfo, TransactionResult, UsageEntry, UsageHistoryOptions,
+    Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy, LatestBlockhash,
+    LatestSlot, LeaderHint, PerformanceMetrics, PingResult, PriorityFee, RoutingRecommendation,
+    SubmitOptions, TipInstruction, TopUpInfo, TransactionResult, UsageEntry, UsageHistoryOptions,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
+
+/// Tracks ping results for latency and clock synchronization
+struct TimeSyncState {
+    samples: std::sync::RwLock<Vec<PingResult>>,
+    max_samples: usize,
+}
+
+impl TimeSyncState {
+    fn new(max_samples: usize) -> Self {
+        Self {
+            samples: std::sync::RwLock::new(Vec::with_capacity(max_samples)),
+            max_samples,
+        }
+    }
+
+    fn record(&self, result: PingResult) {
+        let mut samples = self.samples.write().unwrap();
+        if samples.len() >= self.max_samples {
+            samples.remove(0);
+        }
+        samples.push(result);
+    }
+
+    fn median_rtt_ms(&self) -> Option<u64> {
+        let samples = self.samples.read().unwrap();
+        if samples.is_empty() {
+            return None;
+        }
+        let mut rtts: Vec<u64> = samples.iter().map(|s| s.rtt_ms).collect();
+        rtts.sort();
+        Some(rtts[rtts.len() / 2])
+    }
+
+    fn median_clock_offset_ms(&self) -> Option<i64> {
+        let samples = self.samples.read().unwrap();
+        if samples.is_empty() {
+            return None;
+        }
+        let mut offsets: Vec<i64> = samples.iter().map(|s| s.clock_offset_ms).collect();
+        offsets.sort();
+        Some(offsets[offsets.len() / 2])
+    }
+}
 
 /// Slipstream client for transaction submission and streaming
 pub struct SlipstreamClient {
@@ -50,6 +93,10 @@ pub struct SlipstreamClient {
     latest_tip: Arc<RwLock<Option<TipInstruction>>>,
     /// Performance metrics
     metrics: Arc<ClientMetrics>,
+    /// Time synchronization state from keep-alive pings
+    time_sync: Arc<TimeSyncState>,
+    /// Keep-alive background task handle (Mutex for interior mutability)
+    keepalive_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// Internal metrics tracking
@@ -140,6 +187,35 @@ impl SlipstreamClient {
             .build()
             .map_err(|e| SdkError::connection(format!("Failed to create HTTP client: {}", e)))?;
 
+        let time_sync = Arc::new(TimeSyncState::new(10));
+        let keepalive_handle = if config.keepalive {
+            let transport_clone = Arc::clone(&transport);
+            let sync_clone = Arc::clone(&time_sync);
+            let interval = config.keepalive_interval;
+            Some(tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                loop {
+                    ticker.tick().await;
+                    let transport = transport_clone.read().await;
+                    if !transport.is_connected() {
+                        break;
+                    }
+                    match transport.ping().await {
+                        Ok(result) => {
+                            debug!(rtt_ms = result.rtt_ms, offset_ms = result.clock_offset_ms, "Keepalive ping");
+                            sync_clone.record(result);
+                        }
+                        Err(_) => {
+                            // Transport may not support ping -- that's OK
+                            break;
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
             transport,
@@ -152,6 +228,8 @@ impl SlipstreamClient {
                 total_latency_ms: AtomicU64::new(0),
                 last_latency_ms: AtomicU64::new(0),
             }),
+            time_sync,
+            keepalive_handle: tokio::sync::Mutex::new(keepalive_handle),
         })
     }
 
@@ -173,6 +251,9 @@ impl SlipstreamClient {
 
     /// Disconnect from the server
     pub async fn disconnect(&self) -> Result<()> {
+        if let Some(handle) = self.keepalive_handle.lock().await.take() {
+            handle.abort();
+        }
         let mut transport = self.transport.write().await;
         transport.disconnect().await
     }
@@ -271,6 +352,34 @@ impl SlipstreamClient {
         transport.subscribe_priority_fees().await
     }
 
+    /// Subscribe to latest blockhash stream
+    ///
+    /// Latest blockhash provides the most recent blockhash for transaction building,
+    /// updated as new blocks are produced.
+    ///
+    /// # Returns
+    ///
+    /// A receiver channel that yields latest blockhash updates as they arrive
+    pub async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>> {
+        debug!("Subscribing to latest blockhash");
+        let transport = self.transport.read().await;
+        transport.subscribe_latest_blockhash().await
+    }
+
+    /// Subscribe to latest slot stream
+    ///
+    /// Latest slot provides the current slot number, updated in real-time
+    /// as slots advance.
+    ///
+    /// # Returns
+    ///
+    /// A receiver channel that yields latest slot updates as they arrive
+    pub async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>> {
+        debug!("Subscribing to latest slot");
+        let transport = self.transport.read().await;
+        transport.subscribe_latest_slot().await
+    }
+
     /// Get the latest cached tip instruction
     ///
     /// Returns the most recent tip instruction received from the server.
@@ -364,7 +473,7 @@ impl SlipstreamClient {
                 .region
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
-            leader_pubkey: None,
+            leader_pubkey: String::new(),
             slot: 0,
             confidence: 50, // Low confidence for local fallback
             expected_rtt_ms: None,
@@ -618,13 +727,45 @@ impl SlipstreamClient {
         let submitted = self.metrics.transactions_submitted.load(Ordering::Relaxed);
         let confirmed = self.metrics.transactions_confirmed.load(Ordering::Relaxed);
         let total_latency = self.metrics.total_latency_ms.load(Ordering::Relaxed);
-        
+
         PerformanceMetrics {
             transactions_submitted: submitted,
             transactions_confirmed: confirmed,
             average_latency_ms: if submitted > 0 { total_latency as f64 / submitted as f64 } else { 0.0 },
             success_rate: if submitted > 0 { confirmed as f64 / submitted as f64 } else { 0.0 },
         }
+    }
+
+    // ========================================================================
+    // Keep-Alive & Time Sync Methods
+    // ========================================================================
+
+    /// Get estimated one-way latency in milliseconds (RTT/2)
+    pub fn latency_ms(&self) -> Option<u64> {
+        self.time_sync.median_rtt_ms().map(|rtt| rtt / 2)
+    }
+
+    /// Get estimated clock offset between client and server (milliseconds)
+    pub fn clock_offset_ms(&self) -> Option<i64> {
+        self.time_sync.median_clock_offset_ms()
+    }
+
+    /// Get estimated current server time (unix millis), corrected by clock offset
+    pub fn server_time(&self) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let offset = self.time_sync.median_clock_offset_ms().unwrap_or(0);
+        (now as i64 + offset) as u64
+    }
+
+    /// Send a single ping and return the result
+    pub async fn ping(&self) -> Result<PingResult> {
+        let transport = self.transport.read().await;
+        let result = transport.ping().await?;
+        self.time_sync.record(result.clone());
+        Ok(result)
     }
 }
 

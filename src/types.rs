@@ -20,8 +20,8 @@ pub struct LeaderHint {
     pub backup_regions: Vec<String>,
     /// Confidence score (0-100)
     pub confidence: u32,
-    /// Leader validator pubkey (optional)
-    pub leader_pubkey: Option<String>,
+    /// Leader validator pubkey
+    pub leader_pubkey: String,
     /// Additional metadata
     pub metadata: LeaderHintMetadata,
 }
@@ -101,6 +101,28 @@ pub struct PriorityFee {
     pub network_congestion: String,
     /// Recent success rate
     pub recent_success_rate: f64,
+}
+
+/// Latest blockhash for transaction building
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestBlockhash {
+    /// The blockhash (base58)
+    pub blockhash: String,
+    /// Last valid block height for this blockhash
+    pub last_valid_block_height: u64,
+    /// Timestamp (unix millis)
+    pub timestamp: u64,
+}
+
+/// Latest slot information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestSlot {
+    /// Current slot number
+    pub slot: u64,
+    /// Timestamp (unix millis)
+    pub timestamp: u64,
 }
 
 /// Transaction submission result
@@ -263,6 +285,20 @@ pub struct RateLimitInfo {
     pub burst: u32,
 }
 
+/// Result of a ping/pong exchange for keep-alive and time synchronization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PingResult {
+    /// Sequence number
+    pub seq: u32,
+    /// Round-trip time in milliseconds
+    pub rtt_ms: u64,
+    /// Clock offset: server_time - estimated_client_time (milliseconds, can be negative)
+    pub clock_offset_ms: i64,
+    /// Server timestamp at time of pong (unix millis)
+    pub server_time: u64,
+}
+
 /// Available protocols
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -378,7 +414,7 @@ mod tests {
             "preferredRegion": "us-west",
             "backupRegions": ["eu-central"],
             "confidence": 87,
-            "leaderPubkey": null,
+            "leaderPubkey": "Vote111111111111111111111111111111111111111",
             "metadata": {
                 "tpuRttMs": 12,
                 "regionScore": 0.85
@@ -388,6 +424,7 @@ mod tests {
         let hint: LeaderHint = serde_json::from_str(json).unwrap();
         assert_eq!(hint.preferred_region, "us-west");
         assert_eq!(hint.confidence, 87);
+        assert_eq!(hint.leader_pubkey, "Vote111111111111111111111111111111111111111");
         assert_eq!(hint.metadata.tpu_rtt_ms, 12);
         assert!(hint.metadata.leader_tpu_address.is_none());
         assert!(hint.metadata.region_rtt_ms.is_none());
@@ -414,7 +451,7 @@ mod tests {
         let hint: LeaderHint = serde_json::from_str(json).unwrap();
         assert_eq!(hint.preferred_region, "us-west");
         assert_eq!(hint.confidence, 92);
-        assert_eq!(hint.leader_pubkey, Some("Vote111111111111111111111111111111111111111".to_string()));
+        assert_eq!(hint.leader_pubkey, "Vote111111111111111111111111111111111111111");
         assert_eq!(hint.metadata.leader_tpu_address, Some("192.168.1.100:8004".to_string()));
         let region_rtt = hint.metadata.region_rtt_ms.unwrap();
         assert_eq!(region_rtt.get("us-west"), Some(&8));
@@ -457,6 +494,32 @@ mod tests {
         assert!(!options.broadcast_mode);
         assert_eq!(options.max_retries, 2);
         assert_eq!(options.timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn test_latest_blockhash_deserialize() {
+        let json = r#"{
+            "blockhash": "7Xq3JcEBR1sVmAHGgn3Dz3C96DRfz7RgXWbvJqLbMp3",
+            "lastValidBlockHeight": 12345700,
+            "timestamp": 1706011200000
+        }"#;
+
+        let bh: LatestBlockhash = serde_json::from_str(json).unwrap();
+        assert_eq!(bh.blockhash, "7Xq3JcEBR1sVmAHGgn3Dz3C96DRfz7RgXWbvJqLbMp3");
+        assert_eq!(bh.last_valid_block_height, 12345700);
+        assert_eq!(bh.timestamp, 1706011200000);
+    }
+
+    #[test]
+    fn test_latest_slot_deserialize() {
+        let json = r#"{
+            "slot": 12345678,
+            "timestamp": 1706011200000
+        }"#;
+
+        let slot: LatestSlot = serde_json::from_str(json).unwrap();
+        assert_eq!(slot.slot, 12345678);
+        assert_eq!(slot.timestamp, 1706011200000);
     }
 
     #[test]
@@ -507,7 +570,7 @@ pub struct RoutingRecommendation {
     /// Best region for current leader
     pub best_region: String,
     /// Current leader validator pubkey
-    pub leader_pubkey: Option<String>,
+    pub leader_pubkey: String,
     /// Current slot
     pub slot: u64,
     /// Confidence in recommendation (0-100)

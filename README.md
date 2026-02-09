@@ -130,6 +130,8 @@ The `Config::builder()` provides a fluent interface for configuration:
 | `priority_fee` | Priority fee configuration (`PriorityFeeConfig`). | Disabled |
 | `retry_backoff` | Retry strategy: `Linear` or `Exponential`. | `Exponential` |
 | `min_confidence` | Min confidence for leader hints (0-100). | `70` |
+| `keepalive` | Enable background keep-alive ping. | `true` |
+| `keepalive_interval` | Keep-alive ping interval in seconds. | `5` |
 | `idle_timeout` | Connection idle timeout. | None (no timeout) |
 
 ### Priority Fee Configuration
@@ -163,6 +165,39 @@ println!("State: {:?}, Protocol: {:?}", status.state, status.protocol);
 let metrics = client.metrics();
 println!("Submitted: {}, Success Rate: {:.1}%", 
     metrics.transactions_submitted, metrics.success_rate * 100.0);
+```
+
+## Keep-Alive & Time Sync
+
+The SDK includes a background keep-alive mechanism that also provides latency measurement and clock synchronization with the server using NTP-style calculation.
+
+```rust
+// Enabled by default (5s interval). Configure via:
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .keepalive(true)              // default: true
+    .keepalive_interval(5)        // default: 5 seconds
+    .build()?;
+
+let client = SlipstreamClient::connect(config).await?;
+
+// Manual ping
+let ping = client.ping().await?;
+println!("RTT: {}ms, Clock offset: {}ms", ping.rtt_ms, ping.clock_offset_ms);
+
+// Latency (median one-way from sliding window of 10 samples)
+if let Some(latency) = client.latency_ms() {
+    println!("One-way latency: {}ms", latency);
+}
+
+// Clock offset (median from sliding window)
+if let Some(offset) = client.clock_offset_ms() {
+    println!("Clock offset: {}ms", offset);
+}
+
+// Server time (local clock corrected by offset)
+let server_now = client.server_time();
+println!("Server time: {} unix ms", server_now);
 ```
 
 ## Token Billing

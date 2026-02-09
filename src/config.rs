@@ -46,6 +46,12 @@ pub struct Config {
     /// Enable priority fee streaming
     pub stream_priority_fees: bool,
 
+    /// Enable latest blockhash streaming
+    pub stream_latest_blockhash: bool,
+
+    /// Enable latest slot streaming
+    pub stream_latest_slot: bool,
+
     /// Protocol-specific timeouts
     pub protocol_timeouts: ProtocolTimeouts,
 
@@ -69,6 +75,12 @@ pub struct Config {
 
     /// Billing tier (free, standard, pro, enterprise). Default: "pro"
     pub tier: String,
+
+    /// Enable keep-alive ping loop (default: true)
+    pub keepalive: bool,
+
+    /// Keep-alive ping interval (default: 5 seconds)
+    pub keepalive_interval: Duration,
 }
 
 /// Protocol timeout configuration
@@ -146,6 +158,8 @@ pub struct ConfigBuilder {
     leader_hints: Option<bool>,
     stream_tip_instructions: Option<bool>,
     stream_priority_fees: Option<bool>,
+    stream_latest_blockhash: Option<bool>,
+    stream_latest_slot: Option<bool>,
     protocol_timeouts: Option<ProtocolTimeouts>,
     preferred_protocol: Option<Protocol>,
     selected_worker: Option<WorkerEndpoint>,
@@ -154,6 +168,8 @@ pub struct ConfigBuilder {
     min_confidence: Option<u32>,
     idle_timeout: Option<Duration>,
     tier: Option<String>,
+    keepalive: Option<bool>,
+    keepalive_interval: Option<Duration>,
 }
 
 impl ConfigBuilder {
@@ -211,6 +227,18 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable/disable latest blockhash streaming
+    pub fn stream_latest_blockhash(mut self, enabled: bool) -> Self {
+        self.stream_latest_blockhash = Some(enabled);
+        self
+    }
+
+    /// Enable/disable latest slot streaming
+    pub fn stream_latest_slot(mut self, enabled: bool) -> Self {
+        self.stream_latest_slot = Some(enabled);
+        self
+    }
+
     /// Set custom protocol timeouts
     pub fn protocol_timeouts(mut self, timeouts: ProtocolTimeouts) -> Self {
         self.protocol_timeouts = Some(timeouts);
@@ -253,6 +281,18 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable or disable keep-alive ping loop (default: true)
+    pub fn keepalive(mut self, enabled: bool) -> Self {
+        self.keepalive = Some(enabled);
+        self
+    }
+
+    /// Set keep-alive ping interval in seconds (default: 5)
+    pub fn keepalive_interval(mut self, secs: u64) -> Self {
+        self.keepalive_interval = Some(Duration::from_secs(secs));
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> Result<Config> {
         let config = Config {
@@ -269,6 +309,8 @@ impl ConfigBuilder {
             leader_hints: self.leader_hints.unwrap_or(true),
             stream_tip_instructions: self.stream_tip_instructions.unwrap_or(false),
             stream_priority_fees: self.stream_priority_fees.unwrap_or(false),
+            stream_latest_blockhash: self.stream_latest_blockhash.unwrap_or(false),
+            stream_latest_slot: self.stream_latest_slot.unwrap_or(false),
             protocol_timeouts: self.protocol_timeouts.unwrap_or_default(),
             preferred_protocol: self.preferred_protocol,
             selected_worker: self.selected_worker,
@@ -277,6 +319,8 @@ impl ConfigBuilder {
             min_confidence: self.min_confidence.unwrap_or(70),
             idle_timeout: self.idle_timeout,
             tier: self.tier.unwrap_or_else(|| "pro".to_string()),
+            keepalive: self.keepalive.unwrap_or(true),
+            keepalive_interval: self.keepalive_interval.unwrap_or(Duration::from_secs(5)),
         };
 
         config.validate()?;

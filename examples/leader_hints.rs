@@ -195,8 +195,8 @@ fn print_leader_hint(hint: &LeaderHint, count: usize) {
     println!("      Confidence: {}%", hint.confidence);
     println!("      Current Slot: {}", hint.slot);
     println!("      Expires at Slot: {}", hint.expires_at_slot);
-    if let Some(ref pubkey) = hint.leader_pubkey {
-        println!("      Leader: {}...", &pubkey[..16]);
+    if !hint.leader_pubkey.is_empty() && hint.leader_pubkey.len() >= 16 {
+        println!("      Leader: {}...", &hint.leader_pubkey[..16]);
     }
     println!("      TPU RTT: {}ms", hint.metadata.tpu_rtt_ms);
     println!("      Region Score: {:.2}", hint.metadata.region_score);

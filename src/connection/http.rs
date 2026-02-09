@@ -6,8 +6,8 @@ use super::Transport;
 use crate::config::{Config, Protocol};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    ConnectionInfo, LeaderHint, PriorityFee, RateLimitInfo, SubmitOptions, TipInstruction,
-    TransactionResult, TransactionStatus,
+    ConnectionInfo, LatestBlockhash, LatestSlot, LeaderHint, PingResult, PriorityFee, RateLimitInfo,
+    SubmitOptions, TipInstruction, TransactionResult, TransactionStatus,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -353,6 +353,152 @@ impl Transport for HttpTransport {
         });
 
         Ok(rx)
+    }
+
+    async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        let (tx, rx) = mpsc::channel(32);
+        let client = self.client.clone();
+        let base_url = self.base_url.clone();
+        let auth = self.auth_header();
+
+        tokio::spawn(async move {
+            let mut last_id: Option<String> = None;
+
+            loop {
+                let url = format!("{}/v1/stream/latest-blockhash", base_url);
+                let mut req = client
+                    .get(&url)
+                    .query(&[("timeout", "30")]);
+
+                if let Some(ref id) = last_id {
+                    req = req.query(&[("lastId", id.as_str())]);
+                }
+
+                if let Some(ref auth) = auth {
+                    req = req.header("Authorization", auth.clone());
+                }
+
+                match req.send().await {
+                    Ok(response) if response.status().is_success() => {
+                        if let Ok(poll_response) = response.json::<PollResponse<LatestBlockhash>>().await {
+                            if let Some(data) = poll_response.data {
+                                last_id = Some(poll_response.message_id);
+                                if tx.send(data).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(response) => {
+                        warn!(status = %response.status(), "Latest blockhash poll failed");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Latest blockhash poll error");
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        let (tx, rx) = mpsc::channel(32);
+        let client = self.client.clone();
+        let base_url = self.base_url.clone();
+        let auth = self.auth_header();
+
+        tokio::spawn(async move {
+            let mut last_id: Option<String> = None;
+
+            loop {
+                let url = format!("{}/v1/stream/latest-slot", base_url);
+                let mut req = client
+                    .get(&url)
+                    .query(&[("timeout", "30")]);
+
+                if let Some(ref id) = last_id {
+                    req = req.query(&[("lastId", id.as_str())]);
+                }
+
+                if let Some(ref auth) = auth {
+                    req = req.header("Authorization", auth.clone());
+                }
+
+                match req.send().await {
+                    Ok(response) if response.status().is_success() => {
+                        if let Ok(poll_response) = response.json::<PollResponse<LatestSlot>>().await {
+                            if let Some(data) = poll_response.data {
+                                last_id = Some(poll_response.message_id);
+                                if tx.send(data).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(response) => {
+                        warn!(status = %response.status(), "Latest slot poll failed");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Latest slot poll error");
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn ping(&self) -> Result<PingResult> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        let client_send_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let url = format!("{}/v1/ping", self.base_url.trim_end_matches('/'));
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SdkError::connection(format!("Ping failed: {}", e)))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| SdkError::connection(format!("Invalid ping response: {}", e)))?;
+
+        let server_time = body["server_time"].as_u64().unwrap_or(now);
+        let rtt_ms = now.saturating_sub(client_send_time);
+        let clock_offset_ms = server_time as i64 - (client_send_time as i64 + rtt_ms as i64 / 2);
+
+        Ok(PingResult {
+            seq: 0,
+            rtt_ms,
+            clock_offset_ms,
+            server_time,
+        })
     }
 }
 

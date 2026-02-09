@@ -6,8 +6,8 @@ use super::Transport;
 use crate::config::{Config, Protocol};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    ConnectionInfo, LeaderHint, PriorityFee, RateLimitInfo, SubmitOptions, TipInstruction,
-    TransactionResult, TransactionStatus,
+    ConnectionInfo, LatestBlockhash, LatestSlot, LeaderHint, PingResult, PriorityFee, RateLimitInfo,
+    SubmitOptions, TipInstruction, TransactionResult, TransactionStatus,
 };
 use async_trait::async_trait;
 use quinn::{ClientConfig, Connection, Endpoint};
@@ -27,6 +27,9 @@ pub enum StreamType {
     TipInstructions = 0x03,
     PriorityFees = 0x04,
     Metrics = 0x05,
+    LatestBlockhash = 0x06,
+    LatestSlot = 0x07,
+    Ping = 0x08,
 }
 
 /// Transaction response status codes
@@ -59,6 +62,7 @@ pub struct QuicTransport {
     connected: AtomicBool,
     session_id: RwLock<Option<String>>,
     request_counter: AtomicU32,
+    ping_seq: AtomicU32,
 }
 
 impl QuicTransport {
@@ -71,6 +75,7 @@ impl QuicTransport {
             connected: AtomicBool::new(false),
             session_id: RwLock::new(None),
             request_counter: AtomicU32::new(0),
+            ping_seq: AtomicU32::new(0),
         }
     }
 
@@ -575,7 +580,7 @@ impl Transport for QuicTransport {
                 preferred_region,
                 backup_regions: vec![],
                 confidence,
-                leader_pubkey: None,
+                leader_pubkey: String::new(),
                 metadata: crate::types::LeaderHintMetadata {
                     tpu_rtt_ms: 0,
                     region_score: confidence as f64 / 100.0,
@@ -772,6 +777,150 @@ impl Transport for QuicTransport {
         })
         .await
     }
+
+    async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        self.subscribe_stream(StreamType::LatestBlockhash, |data| {
+            // Parse LatestBlockhash wire format:
+            // - 1 byte: stream type (0x06)
+            // - 1 byte: blockhash length
+            // - N bytes: blockhash (base58)
+            // - 8 bytes: last_valid_block_height (u64 BE)
+            // - 8 bytes: timestamp (u64 BE)
+
+            if data.len() < 2 || data[0] != StreamType::LatestBlockhash as u8 {
+                return None;
+            }
+
+            let mut offset = 1;
+            let hash_len = data[offset] as usize;
+            offset += 1;
+
+            if data.len() < offset + hash_len + 16 {
+                return None;
+            }
+
+            let blockhash = String::from_utf8_lossy(&data[offset..offset + hash_len]).to_string();
+            offset += hash_len;
+
+            let last_valid_block_height = u64::from_be_bytes([
+                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+            ]);
+            offset += 8;
+
+            let timestamp = u64::from_be_bytes([
+                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+            ]);
+
+            Some(LatestBlockhash {
+                blockhash,
+                last_valid_block_height,
+                timestamp,
+            })
+        })
+        .await
+    }
+
+    async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        self.subscribe_stream(StreamType::LatestSlot, |data| {
+            // Parse LatestSlot wire format:
+            // - 1 byte: stream type (0x07)
+            // - 8 bytes: slot (u64 BE)
+            // - 8 bytes: timestamp (u64 BE)
+
+            if data.len() < 17 || data[0] != StreamType::LatestSlot as u8 {
+                return None;
+            }
+
+            let slot = u64::from_be_bytes([
+                data[1], data[2], data[3], data[4],
+                data[5], data[6], data[7], data[8],
+            ]);
+
+            let timestamp = u64::from_be_bytes([
+                data[9], data[10], data[11], data[12],
+                data[13], data[14], data[15], data[16],
+            ]);
+
+            Some(LatestSlot {
+                slot,
+                timestamp,
+            })
+        })
+        .await
+    }
+
+    async fn ping(&self) -> Result<PingResult> {
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        let connection = {
+            let guard = self.connection.read().await;
+            guard
+                .as_ref()
+                .ok_or(SdkError::NotConnected)?
+                .clone()
+        };
+
+        let seq = self.ping_seq.fetch_add(1, Ordering::Relaxed);
+        let client_send_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Open bidi stream and send ping frame
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to open ping stream: {}", e)))?;
+
+        let mut frame = [0u8; 13];
+        frame[0] = StreamType::Ping as u8;
+        frame[1..5].copy_from_slice(&seq.to_be_bytes());
+        frame[5..13].copy_from_slice(&client_send_time.to_be_bytes());
+
+        send.write_all(&frame)
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to send ping: {}", e)))?;
+        let _ = send.finish();
+
+        // Read pong response (21 bytes)
+        let mut response = [0u8; 21];
+        recv.read_exact(&mut response)
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to read pong: {}", e)))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Parse response
+        let _resp_type = response[0]; // 0x08
+        let _resp_seq = u32::from_be_bytes([response[1], response[2], response[3], response[4]]);
+        let _resp_client_time = u64::from_be_bytes(response[5..13].try_into().unwrap());
+        let server_time = u64::from_be_bytes(response[13..21].try_into().unwrap());
+
+        let rtt_ms = now.saturating_sub(client_send_time);
+        let clock_offset_ms = server_time as i64 - (client_send_time as i64 + rtt_ms as i64 / 2);
+
+        Ok(PingResult {
+            seq,
+            rtt_ms,
+            clock_offset_ms,
+            server_time,
+        })
+    }
 }
 
 /// Custom certificate verifier that skips verification (for development)
@@ -838,6 +987,8 @@ mod tests {
         assert_eq!(StreamType::TipInstructions as u8, 0x03);
         assert_eq!(StreamType::PriorityFees as u8, 0x04);
         assert_eq!(StreamType::Metrics as u8, 0x05);
+        assert_eq!(StreamType::LatestBlockhash as u8, 0x06);
+        assert_eq!(StreamType::LatestSlot as u8, 0x07);
     }
 
     #[test]

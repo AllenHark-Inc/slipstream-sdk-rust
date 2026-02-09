@@ -89,8 +89,8 @@ pub use error::{Result, SdkError};
 pub use multi_region::MultiRegionClient;
 pub use types::{
     AlternativeSender, Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
-    FreeTierUsage, LeaderHint, LeaderHintMetadata, MultiRegionConfig, PerformanceMetrics,
-    PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionStatus, RoutingInfo,
+    FreeTierUsage, LatestBlockhash, LatestSlot, LeaderHint, LeaderHintMetadata, MultiRegionConfig,
+    PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionStatus, RoutingInfo,
     RoutingRecommendation, SubmitOptions, TipInstruction, TopUpInfo, TransactionError,
     TransactionResult, TransactionStatus, UsageEntry, UsageHistoryOptions, WorkerEndpoint,
 };

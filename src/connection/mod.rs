@@ -12,8 +12,8 @@ pub mod websocket;
 use crate::config::{Config, ProtocolTimeouts};
 use crate::error::{Result, SdkError};
 use crate::types::{
-    ConnectionInfo, LeaderHint, PriorityFee, Protocol, SubmitOptions, TipInstruction,
-    TransactionResult,
+    ConnectionInfo, LatestBlockhash, LatestSlot, LeaderHint, PingResult, PriorityFee, Protocol,
+    SubmitOptions, TipInstruction, TransactionResult,
 };
 use async_trait::async_trait;
 use std::time::Duration;
@@ -53,6 +53,17 @@ pub trait Transport: Send + Sync {
 
     /// Subscribe to priority fees stream
     async fn subscribe_priority_fees(&self) -> Result<mpsc::Receiver<PriorityFee>>;
+
+    /// Subscribe to latest blockhash stream
+    async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>>;
+
+    /// Subscribe to latest slot stream
+    async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>>;
+
+    /// Send a ping and measure RTT + clock offset
+    async fn ping(&self) -> Result<PingResult> {
+        Err(SdkError::connection("ping not supported on this transport"))
+    }
 }
 
 /// Fallback chain for protocol selection
