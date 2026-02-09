@@ -99,20 +99,94 @@ let result = client.submit_transaction_with_options(&tx_data, &options).await?;
 
 ### Streaming Intelligence
 
-Subscribe to real-time data feeds to optimize your trading or transaction strategy.
+Subscribe to real-time data feeds over QUIC (binary) or WebSocket (JSON). Each stream subscription costs **0.00005 SOL (1 token)**. If the SDK reconnects within 1 hour for the same stream, no re-billing occurs (reconnect grace period). Free-tier keys deduct from the daily counter instead.
+
+#### Leader Hints
+
+Leader hints tell you which region is closest to the current Solana leader validator. Emitted every 250ms when confidence is above the configured threshold.
 
 ```rust
-// 1. Leader Hints
 let mut hints = client.subscribe_leader_hints().await?;
 while let Some(hint) = hints.recv().await {
-    println!("Current Leader Region: {}", hint.preferred_region);
+    println!("Slot {}: best region = {}", hint.slot, hint.preferred_region);
+    println!("  Leader: {}", hint.leader_pubkey);
+    println!("  Confidence: {}%, TPU RTT: {}ms", hint.confidence, hint.metadata.tpu_rtt_ms);
+    println!("  Backups: {:?}", hint.backup_regions);
+}
+```
+
+#### Tip Instructions
+
+Tip instructions provide the wallet address and tip amount for building transactions in streaming tip mode.
+
+```rust
+let mut tips = client.subscribe_tip_instructions().await?;
+while let Some(tip) = tips.recv().await {
+    println!("Sender: {} ({})", tip.sender_name, tip.sender);
+    println!("  Wallet: {}", tip.tip_wallet_address);
+    println!("  Amount: {} SOL (tier: {})", tip.tip_amount_sol, tip.tip_tier);
+    println!("  Latency: {}ms, Confidence: {}%", tip.expected_latency_ms, tip.confidence);
 }
 
-// 2. Priority Fees
-let mut fee_stream = client.subscribe_priority_fees().await?;
-while let Some(fee) = fee_stream.recv().await {
-    println!("Recommended Fee: {} micro-lamports", fee.compute_unit_price);
+// Access the most recent tip at any time (no subscription needed)
+if let Some(tip) = client.get_latest_tip().await {
+    println!("Latest tip: {} SOL to {}", tip.tip_amount_sol, tip.tip_wallet_address);
 }
+```
+
+#### Priority Fees
+
+Priority fee recommendations based on current network conditions, updated every second.
+
+```rust
+let mut fees = client.subscribe_priority_fees().await?;
+while let Some(fee) = fees.recv().await {
+    println!("Speed: {}, CU price: {} µL/CU", fee.speed, fee.compute_unit_price);
+    println!("  CU limit: {}, Est cost: {} SOL", fee.compute_unit_limit, fee.estimated_cost_sol);
+    println!("  Landing probability: {}%", fee.landing_probability);
+    println!("  Network congestion: {}", fee.network_congestion);
+}
+```
+
+#### Latest Blockhash
+
+Streams the latest blockhash every 2 seconds. Use this to build transactions without a separate RPC call.
+
+```rust
+let mut blockhash_stream = client.subscribe_latest_blockhash().await?;
+while let Some(bh) = blockhash_stream.recv().await {
+    println!("Blockhash: {}", bh.blockhash);
+    println!("  Valid until block: {}", bh.last_valid_block_height);
+}
+```
+
+#### Latest Slot
+
+Streams the current confirmed slot on every slot change (~400ms).
+
+```rust
+let mut slot_stream = client.subscribe_latest_slot().await?;
+while let Some(slot_info) = slot_stream.recv().await {
+    println!("Current slot: {}", slot_info.slot);
+}
+```
+
+#### Auto-Subscribe on Connect
+
+Enable streams at configuration time so they activate immediately when the client connects:
+
+```rust
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .leader_hints(true)                  // default: true
+    .stream_tip_instructions(true)       // default: false
+    .stream_priority_fees(true)          // default: false
+    .stream_latest_blockhash(true)       // default: false
+    .stream_latest_slot(true)            // default: false
+    .build()?;
+
+let client = SlipstreamClient::connect(config).await?;
+// All 5 streams are active immediately
 ```
 
 ## Configuration
@@ -127,12 +201,37 @@ The `Config::builder()` provides a fluent interface for configuration:
 | `endpoint` | Explicit URL override (disables discovery). | None |
 | `leader_hints` | Enable auto-subscription to leader hints. | `true` |
 | `protocol_timeouts` | Custom timeouts for QUIC, gRPC, etc. | Smart defaults |
+| `tier` | Billing tier: `"free"`, `"standard"`, `"pro"`, `"enterprise"`. | `"pro"` |
+| `stream_tip_instructions` | Auto-subscribe to tip instructions on connect. | `false` |
+| `stream_priority_fees` | Auto-subscribe to priority fees on connect. | `false` |
+| `stream_latest_blockhash` | Auto-subscribe to latest blockhash on connect. | `false` |
+| `stream_latest_slot` | Auto-subscribe to latest slot on connect. | `false` |
 | `priority_fee` | Priority fee configuration (`PriorityFeeConfig`). | Disabled |
 | `retry_backoff` | Retry strategy: `Linear` or `Exponential`. | `Exponential` |
 | `min_confidence` | Min confidence for leader hints (0-100). | `70` |
 | `keepalive` | Enable background keep-alive ping. | `true` |
 | `keepalive_interval` | Keep-alive ping interval in seconds. | `5` |
 | `idle_timeout` | Connection idle timeout. | None (no timeout) |
+
+### Billing Tiers
+
+Each API key has a billing tier that determines transaction cost, rate limits, and priority queuing. Set the tier in your config to match your API key's tier:
+
+```rust
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .tier("pro")  // "free", "standard", "pro", or "enterprise"
+    .build()?;
+```
+
+| Tier | Cost per TX | Rate Limit | Priority Slots | Daily Limit |
+|------|------------|------------|----------------|-------------|
+| **Free** | 0 (counter-based) | 5 rps | 5 | 100 tx/day |
+| **Standard** | 0.00005 SOL | 5 rps | 10 | Unlimited |
+| **Pro** | 0.0001 SOL | 20 rps | 50 | Unlimited |
+| **Enterprise** | 0.001 SOL | 100 rps | 200 | Unlimited |
+
+Free tier keys use a daily counter instead of token billing. Stream subscriptions also count against the daily limit.
 
 ### Priority Fee Configuration
 
