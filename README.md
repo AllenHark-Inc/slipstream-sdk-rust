@@ -8,27 +8,20 @@ The official Rust client for **AllenHark Slipstream**, the high-performance Sola
 [![Documentation](https://docs.rs/allenhark-slipstream/badge.svg)](https://docs.rs/allenhark-slipstream)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## Overview
-
-The Slipstream SDK provides a robust, low-latency connection to the Slipstream Global Mesh. It allows Solana applications to:
-- **Submit Transactions** with minimal latency using QUIC and IP-based routing.
-- **Stream Intelligence** such as leader hints, priority fees, and tip instructions in real-time.
-- **Ensure Reliability** through automatic protocol fallback and background health monitoring.
-
-
 ## Features
 
-- **Multi-Protocol Support**: Primary **QUIC** transport for speed, falling back to **gRPC**, **WebSocket**, and **HTTP** to ensure connectivity in any environment.
-- **Smart Worker Selection**: Automatically pings and selects the lowest-latency worker endpoint in the mesh (IP-based routing).
-- **Resilience**: Integrated `HealthMonitor` checks connection status and reconnects transparently.
-- **Real-Time Streams**: Subscribe to network insights:
-    - `LeaderHint`: Which region/validator is leading the current slot.
-    - `PriorityFee`: Dynamic compute unit pricing.
-    - `TipInstruction`: Optimal tip amounts and destinations.
+- **Discovery-based connection** -- auto-discovers workers, no manual endpoint configuration
+- **Leader-proximity routing** -- real-time leader hints route transactions to the lowest-latency region
+- **Multi-region support** -- connect to workers across regions, auto-route based on leader schedule
+- **Multi-protocol** -- QUIC (primary), gRPC, WebSocket, HTTP with automatic fallback
+- **6 real-time streams** -- leader hints, tip instructions, priority fees, latest blockhash, latest slot, transaction updates
+- **Stream billing** -- each stream costs 1 token; 1-hour reconnect grace period
+- **Billing tiers** -- Free (100 tx/day), Standard, Pro, Enterprise with tier-specific rate limits
+- **Token billing** -- check balance, deposit SOL, view usage and deposit history
+- **Keep-alive & time sync** -- background ping with RTT measurement and NTP-style clock synchronization
+- **Deduplication** -- prevent duplicate submissions with custom dedup IDs
 
 ## Installation
-
-Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -38,86 +31,326 @@ tokio = { version = "1.0", features = ["full"] }
 
 ## Quick Start
 
-### Connecting
-
-The `SlipstreamClient` automatically discovers available workers via the discovery service and connects directly to the best worker's IP address. No manual endpoint configuration needed.
-
 ```rust
 use allenhark_slipstream::{Config, SlipstreamClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Just an API key — discovery handles the rest
+    // Connect with just an API key -- discovery handles the rest
     let config = Config::builder()
         .api_key("sk_live_12345678")
         .build()?;
 
     let client = SlipstreamClient::connect(config).await?;
 
-    println!("Connected via: {}", client.connection_info().protocol);
+    // Submit a signed transaction
+    let result = client.submit_transaction(&tx_bytes).await?;
+    println!("TX: {} ({})", result.transaction_id, result.status);
+
+    // Check balance
+    let balance = client.get_balance().await?;
+    println!("Balance: {} tokens", balance.balance_tokens);
 
     Ok(())
 }
 ```
 
-Optionally prefer a specific region:
+---
+
+## Configuration
+
+### ConfigBuilder Reference
+
+Use `Config::builder()` for fluent configuration. Only `api_key` is required.
+
+```rust
+use allenhark_slipstream::{Config, PriorityFeeConfig, PriorityFeeSpeed, BackoffStrategy};
+use std::time::Duration;
+
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .region("us-east")
+    .tier("pro")
+    .min_confidence(80)
+    .build()?;
+```
+
+| Method | Type | Default | Description |
+|--------|------|---------|-------------|
+| `api_key(key)` | `&str` | **required** | API key (must start with `sk_`) |
+| `region(region)` | `&str` | auto | Preferred region (e.g., `"us-east"`, `"eu-central"`) |
+| `endpoint(url)` | `&str` | auto | Override discovery with explicit worker endpoint |
+| `discovery_url(url)` | `&str` | `https://discovery.slipstream.allenhark.com` | Custom discovery service URL |
+| `tier(tier)` | `&str` | `"pro"` | Billing tier: `"free"`, `"standard"`, `"pro"`, `"enterprise"` |
+| `connection_timeout(dur)` | `Duration` | 10s | Connection timeout |
+| `max_retries(n)` | `u32` | `3` | Maximum retry attempts for failed requests |
+| `leader_hints(bool)` | `bool` | `true` | Auto-subscribe to leader hint stream on connect |
+| `stream_tip_instructions(bool)` | `bool` | `false` | Auto-subscribe to tip instruction stream on connect |
+| `stream_priority_fees(bool)` | `bool` | `false` | Auto-subscribe to priority fee stream on connect |
+| `stream_latest_blockhash(bool)` | `bool` | `false` | Auto-subscribe to latest blockhash stream on connect |
+| `stream_latest_slot(bool)` | `bool` | `false` | Auto-subscribe to latest slot stream on connect |
+| `protocol_timeouts(timeouts)` | `ProtocolTimeouts` | QUIC=2s, gRPC=3s, WS=3s, HTTP=5s | Per-protocol connection timeouts |
+| `preferred_protocol(proto)` | `Protocol` | auto | Force a specific protocol (skip fallback chain) |
+| `priority_fee(config)` | `PriorityFeeConfig` | disabled | Priority fee optimization settings (see below) |
+| `retry_backoff(strategy)` | `BackoffStrategy` | `Exponential` | Retry backoff: `Linear` or `Exponential` |
+| `min_confidence(n)` | `u32` | `70` | Minimum confidence (0-100) for leader hint routing |
+| `keepalive(bool)` | `bool` | `true` | Enable background keep-alive ping loop |
+| `keepalive_interval(secs)` | `u64` | `5` | Keep-alive ping interval in seconds |
+| `idle_timeout(dur)` | `Duration` | none | Disconnect after idle period |
+
+### Billing Tiers
+
+Each API key has a billing tier that determines transaction cost, rate limits, and priority queuing weight. Set the tier to match your API key's assigned tier:
 
 ```rust
 let config = Config::builder()
     .api_key("sk_live_12345678")
-    .region("us-east")  // Optional: prefer this region
+    .tier("pro")
     .build()?;
 ```
 
-### Submitting a Transaction
+| Tier | Cost per TX | Cost per Stream | Rate Limit | Burst | Priority Slots | Daily Limit |
+|------|------------|-----------------|------------|-------|----------------|-------------|
+| **Free** | 0 (counter) | 0 (counter) | 5 rps | 10 | 5 concurrent | 100 tx/day |
+| **Standard** | 50,000 lamports (0.00005 SOL) | 50,000 lamports | 5 rps | 10 | 10 concurrent | Unlimited |
+| **Pro** | 100,000 lamports (0.0001 SOL) | 50,000 lamports | 20 rps | 50 | 50 concurrent | Unlimited |
+| **Enterprise** | 1,000,000 lamports (0.001 SOL) | 50,000 lamports | 100 rps | 200 | 200 concurrent | Unlimited |
+
+- **Free tier**: Uses a daily counter instead of token billing. Transactions and stream subscriptions both decrement the counter. Resets at UTC midnight.
+- **Standard/Pro/Enterprise**: Deducted from token balance per transaction. Stream subscriptions cost 1 token each with a 1-hour reconnect grace period.
+
+### PriorityFeeConfig
+
+Controls automatic priority fee optimization for transactions.
 
 ```rust
-// Submit a raw signed transaction (serialized as bytes)
-let tx_data: Vec<u8> = vec![...]; 
+use allenhark_slipstream::{PriorityFeeConfig, PriorityFeeSpeed};
 
-let result = client.submit_transaction(&tx_data).await?;
-
-println!("Transaction ID: {}", result.transaction_id);
-println!("Status: {:?}", result.status);
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .priority_fee(PriorityFeeConfig {
+        enabled: true,
+        speed: PriorityFeeSpeed::UltraFast,
+        max_tip: Some(0.01),
+    })
+    .build()?;
 ```
 
-### Advanced Submission Options
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable automatic priority fee optimization |
+| `speed` | `PriorityFeeSpeed` | `Fast` | Fee tier: `Slow`, `Fast`, or `UltraFast` |
+| `max_tip` | `Option<f64>` | `None` | Maximum tip in SOL (caps the priority fee) |
 
-You can control broadcast behavior and retry logic:
+**PriorityFeeSpeed tiers:**
+
+| Speed | Compute Unit Price | Landing Probability | Use Case |
+|-------|-------------------|--------------------|---------|
+| `Slow` | Low | ~60-70% | Cost-sensitive, non-urgent transactions |
+| `Fast` | Medium | ~85-90% | Default balance of cost and speed |
+| `UltraFast` | High | ~95-99% | Time-critical trading, MEV protection |
+
+### ProtocolTimeouts
+
+```rust
+use allenhark_slipstream::ProtocolTimeouts;
+use std::time::Duration;
+
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .protocol_timeouts(ProtocolTimeouts {
+        quic: Duration::from_millis(2000),
+        grpc: Duration::from_millis(3000),
+        websocket: Duration::from_millis(3000),
+        http: Duration::from_millis(5000),
+    })
+    .build()?;
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `quic` | `Duration` | 2s | QUIC connection timeout |
+| `grpc` | `Duration` | 3s | gRPC connection timeout |
+| `websocket` | `Duration` | 3s | WebSocket connection timeout |
+| `http` | `Duration` | 5s | HTTP request timeout |
+
+### Protocol Fallback Chain
+
+The SDK tries protocols in order until one succeeds:
+
+**QUIC** (2s) -> **gRPC** (3s) -> **WebSocket** (3s) -> **HTTP** (5s)
+
+Override with `preferred_protocol()` to skip the fallback chain:
+
+```rust
+use allenhark_slipstream::Protocol;
+
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .preferred_protocol(Protocol::WebSocket)
+    .build()?;
+```
+
+---
+
+## Connecting
+
+### Auto-Discovery (Recommended)
+
+```rust
+use allenhark_slipstream::{Config, SlipstreamClient};
+
+// Minimal -- discovery finds the best worker
+let config = Config::builder().api_key("sk_live_xxx").build()?;
+let client = SlipstreamClient::connect(config).await?;
+
+// With region preference
+let config = Config::builder()
+    .api_key("sk_live_xxx")
+    .region("us-east")
+    .build()?;
+let client = SlipstreamClient::connect(config).await?;
+```
+
+### Direct Endpoint (Advanced)
+
+Bypass discovery and connect to a specific worker:
+
+```rust
+let config = Config::builder()
+    .api_key("sk_live_xxx")
+    .endpoint("http://worker-ip:9000")
+    .build()?;
+let client = SlipstreamClient::connect(config).await?;
+```
+
+### Connection Info
+
+```rust
+let info = client.connection_info();
+println!("Session: {}", info.session_id);
+println!("Protocol: {}", info.protocol);  // "quic", "grpc", "ws", "http"
+println!("Region: {:?}", info.region);
+println!("Rate limit: {} rps (burst: {})", info.rate_limit.rps, info.rate_limit.burst);
+```
+
+---
+
+## Transaction Submission
+
+### Basic Submit
+
+```rust
+let result = client.submit_transaction(&tx_bytes).await?;
+println!("TX ID: {}", result.transaction_id);
+println!("Status: {:?}", result.status);
+if let Some(sig) = &result.signature {
+    println!("Signature: {}", sig);
+}
+```
+
+### Submit with Options
 
 ```rust
 use allenhark_slipstream::SubmitOptions;
 
-let options = SubmitOptions {
-    broadcast_mode: true, // Fan-out to multiple regions
+let result = client.submit_transaction_with_options(&tx_bytes, &SubmitOptions {
+    broadcast_mode: true,
+    preferred_sender: Some("nozomi".to_string()),
     max_retries: 5,
-    ..Default::default()
-};
-
-let result = client.submit_transaction_with_options(&tx_data, &options).await?;
+    timeout_ms: 10_000,
+    dedup_id: Some("my-unique-id".to_string()),
+}).await?;
 ```
 
-### Streaming Intelligence
+#### SubmitOptions Fields
 
-Subscribe to real-time data feeds over QUIC (binary) or WebSocket (JSON). Each stream subscription costs **0.00005 SOL (1 token)**. If the SDK reconnects within 1 hour for the same stream, no re-billing occurs (reconnect grace period). Free-tier keys deduct from the daily counter instead.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `broadcast_mode` | `bool` | `false` | Fan-out to multiple regions simultaneously |
+| `preferred_sender` | `Option<String>` | `None` | Prefer a specific sender (e.g., `"nozomi"`, `"0slot"`) |
+| `max_retries` | `u32` | `2` | Retry attempts on failure |
+| `timeout_ms` | `u64` | `30000` | Timeout per attempt in milliseconds |
+| `dedup_id` | `Option<String>` | `None` | Custom deduplication ID (prevents double-submit) |
 
-#### Leader Hints
+### TransactionResult Fields
 
-Leader hints tell you which region is closest to the current Solana leader validator. Emitted every 250ms when confidence is above the configured threshold.
+| Field | Type | Description |
+|-------|------|-------------|
+| `request_id` | `String` | Internal request ID |
+| `transaction_id` | `String` | Slipstream transaction ID |
+| `signature` | `Option<String>` | Solana transaction signature (base58, when confirmed) |
+| `status` | `TransactionStatus` | Current status (see table below) |
+| `slot` | `Option<u64>` | Solana slot (when confirmed) |
+| `timestamp` | `u64` | Unix timestamp in milliseconds |
+| `routing` | `Option<RoutingInfo>` | Routing details (region, sender, latencies) |
+| `error` | `Option<TransactionError>` | Error details (on failure) |
+
+### TransactionStatus Values
+
+| Status | Description |
+|--------|-------------|
+| `Pending` | Received, not yet processed |
+| `Processing` | Being validated and routed |
+| `Sent` | Forwarded to sender |
+| `Confirmed` | Confirmed on Solana |
+| `Failed` | Failed permanently |
+| `Duplicate` | Deduplicated (already submitted) |
+| `RateLimited` | Rate limit exceeded for your tier |
+| `InsufficientTokens` | Token balance too low (or free tier daily limit reached) |
+
+### RoutingInfo Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `region` | `String` | Region that handled the transaction |
+| `sender` | `String` | Sender service used |
+| `routing_latency_ms` | `u32` | Time spent in routing logic (ms) |
+| `sender_latency_ms` | `u32` | Time spent in sender submission (ms) |
+| `total_latency_ms` | `u32` | Total end-to-end latency (ms) |
+
+---
+
+## Streaming
+
+Real-time data feeds over QUIC (binary) or WebSocket (JSON).
+
+**Billing:** Each stream subscription costs **1 token (0.00005 SOL)**. If the SDK reconnects within 1 hour for the same stream, no re-billing occurs (reconnect grace period). Free-tier keys deduct from the daily counter instead of tokens.
+
+### Leader Hints
+
+Which region is closest to the current Solana leader. Emitted every 250ms when confidence >= threshold.
 
 ```rust
 let mut hints = client.subscribe_leader_hints().await?;
 while let Some(hint) = hints.recv().await {
-    println!("Slot {}: best region = {}", hint.slot, hint.preferred_region);
+    println!("Slot {}: route to {}", hint.slot, hint.preferred_region);
     println!("  Leader: {}", hint.leader_pubkey);
-    println!("  Confidence: {}%, TPU RTT: {}ms", hint.confidence, hint.metadata.tpu_rtt_ms);
+    println!("  Confidence: {}%", hint.confidence);
+    println!("  TPU RTT: {}ms", hint.metadata.tpu_rtt_ms);
     println!("  Backups: {:?}", hint.backup_regions);
 }
 ```
 
-#### Tip Instructions
+#### LeaderHint Fields
 
-Tip instructions provide the wallet address and tip amount for building transactions in streaming tip mode.
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | `u64` | Unix millis |
+| `slot` | `u64` | Current slot |
+| `expires_at_slot` | `u64` | Slot when this hint expires |
+| `preferred_region` | `String` | Best region for current leader |
+| `backup_regions` | `Vec<String>` | Fallback regions in priority order |
+| `confidence` | `u32` | Confidence score (0-100) |
+| `leader_pubkey` | `String` | Current leader validator pubkey |
+| `metadata.tpu_rtt_ms` | `u32` | RTT to leader's TPU from preferred region |
+| `metadata.region_score` | `f64` | Region quality score |
+| `metadata.leader_tpu_address` | `Option<String>` | Leader's TPU address (ip:port) |
+| `metadata.region_rtt_ms` | `Option<HashMap<String, u32>>` | Per-region RTT to leader |
+
+### Tip Instructions
+
+Wallet address and tip amount for building transactions in streaming tip mode.
 
 ```rust
 let mut tips = client.subscribe_tip_instructions().await?;
@@ -126,54 +359,112 @@ while let Some(tip) = tips.recv().await {
     println!("  Wallet: {}", tip.tip_wallet_address);
     println!("  Amount: {} SOL (tier: {})", tip.tip_amount_sol, tip.tip_tier);
     println!("  Latency: {}ms, Confidence: {}%", tip.expected_latency_ms, tip.confidence);
+    for alt in &tip.alternative_senders {
+        println!("  Alt: {} @ {} SOL", alt.sender, alt.tip_amount_sol);
+    }
 }
 
-// Access the most recent tip at any time (no subscription needed)
+// Latest cached tip (no subscription required)
 if let Some(tip) = client.get_latest_tip().await {
-    println!("Latest tip: {} SOL to {}", tip.tip_amount_sol, tip.tip_wallet_address);
+    println!("Tip {} SOL to {}", tip.tip_amount_sol, tip.tip_wallet_address);
 }
 ```
 
-#### Priority Fees
+#### TipInstruction Fields
 
-Priority fee recommendations based on current network conditions, updated every second.
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | `u64` | Unix millis |
+| `sender` | `String` | Sender ID |
+| `sender_name` | `String` | Human-readable sender name |
+| `tip_wallet_address` | `String` | Tip wallet address (base58) |
+| `tip_amount_sol` | `f64` | Required tip amount in SOL |
+| `tip_tier` | `String` | Tip tier name |
+| `expected_latency_ms` | `u32` | Expected submission latency (ms) |
+| `confidence` | `u32` | Confidence score (0-100) |
+| `valid_until_slot` | `u64` | Slot until which this tip is valid |
+| `alternative_senders` | `Vec<AlternativeSender>` | Alternative sender options |
+
+### Priority Fees
+
+Network-condition-based fee recommendations, updated every second.
 
 ```rust
 let mut fees = client.subscribe_priority_fees().await?;
 while let Some(fee) = fees.recv().await {
-    println!("Speed: {}, CU price: {} µL/CU", fee.speed, fee.compute_unit_price);
-    println!("  CU limit: {}, Est cost: {} SOL", fee.compute_unit_limit, fee.estimated_cost_sol);
+    println!("Speed: {}", fee.speed);
+    println!("  CU price: {} micro-lamports", fee.compute_unit_price);
+    println!("  CU limit: {}", fee.compute_unit_limit);
+    println!("  Est cost: {} SOL", fee.estimated_cost_sol);
     println!("  Landing probability: {}%", fee.landing_probability);
-    println!("  Network congestion: {}", fee.network_congestion);
+    println!("  Congestion: {}", fee.network_congestion);
+    println!("  Recent success rate: {:.1}%", fee.recent_success_rate * 100.0);
 }
 ```
 
-#### Latest Blockhash
+#### PriorityFee Fields
 
-Streams the latest blockhash every 2 seconds. Use this to build transactions without a separate RPC call.
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | `u64` | Unix millis |
+| `speed` | `String` | Fee speed tier (`"slow"`, `"fast"`, `"ultra_fast"`) |
+| `compute_unit_price` | `u64` | Compute unit price in micro-lamports |
+| `compute_unit_limit` | `u32` | Recommended compute unit limit |
+| `estimated_cost_sol` | `f64` | Estimated total priority fee in SOL |
+| `landing_probability` | `u32` | Estimated landing probability (0-100) |
+| `network_congestion` | `String` | Network congestion level (`"low"`, `"medium"`, `"high"`) |
+| `recent_success_rate` | `f64` | Recent success rate (0.0-1.0) |
+
+### Latest Blockhash
+
+Streams the latest blockhash every 2 seconds. Build transactions without a separate RPC call.
 
 ```rust
-let mut blockhash_stream = client.subscribe_latest_blockhash().await?;
-while let Some(bh) = blockhash_stream.recv().await {
+let mut bh_stream = client.subscribe_latest_blockhash().await?;
+while let Some(bh) = bh_stream.recv().await {
     println!("Blockhash: {}", bh.blockhash);
-    println!("  Valid until block: {}", bh.last_valid_block_height);
+    println!("  Valid until block height: {}", bh.last_valid_block_height);
 }
 ```
 
-#### Latest Slot
+#### LatestBlockhash Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `blockhash` | `String` | Latest blockhash (base58) |
+| `last_valid_block_height` | `u64` | Last valid block height for this blockhash |
+| `timestamp` | `u64` | Unix millis when fetched |
+
+### Latest Slot
 
 Streams the current confirmed slot on every slot change (~400ms).
 
 ```rust
 let mut slot_stream = client.subscribe_latest_slot().await?;
-while let Some(slot_info) = slot_stream.recv().await {
-    println!("Current slot: {}", slot_info.slot);
+while let Some(s) = slot_stream.recv().await {
+    println!("Current slot: {}", s.slot);
 }
 ```
 
-#### Auto-Subscribe on Connect
+#### LatestSlot Fields
 
-Enable streams at configuration time so they activate immediately when the client connects:
+| Field | Type | Description |
+|-------|------|-------------|
+| `slot` | `u64` | Current confirmed slot number |
+| `timestamp` | `u64` | Unix millis |
+
+### Transaction Updates
+
+Real-time status updates for submitted transactions.
+
+```rust
+// Transaction updates arrive automatically after submission
+// Access via the returned TransactionResult or stream
+```
+
+### Auto-Subscribe on Connect
+
+Enable streams at configuration time so they activate immediately:
 
 ```rust
 let config = Config::builder()
@@ -186,92 +477,49 @@ let config = Config::builder()
     .build()?;
 
 let client = SlipstreamClient::connect(config).await?;
-// All 5 streams are active immediately
+// All 5 streams are active immediately -- just consume channels
 ```
 
-## Configuration
+### Handling Multiple Streams
 
-The `Config::builder()` provides a fluent interface for configuration:
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `api_key` | **Required.** Your authentication key. | - |
-| `region` | Preferred region (e.g., `us-east`, `eu-central`). | Auto-detect |
-| `discovery_url` | Discovery service URL for worker lookup. | `https://discovery.slipstream.allenhark.com` |
-| `endpoint` | Explicit URL override (disables discovery). | None |
-| `leader_hints` | Enable auto-subscription to leader hints. | `true` |
-| `protocol_timeouts` | Custom timeouts for QUIC, gRPC, etc. | Smart defaults |
-| `tier` | Billing tier: `"free"`, `"standard"`, `"pro"`, `"enterprise"`. | `"pro"` |
-| `stream_tip_instructions` | Auto-subscribe to tip instructions on connect. | `false` |
-| `stream_priority_fees` | Auto-subscribe to priority fees on connect. | `false` |
-| `stream_latest_blockhash` | Auto-subscribe to latest blockhash on connect. | `false` |
-| `stream_latest_slot` | Auto-subscribe to latest slot on connect. | `false` |
-| `priority_fee` | Priority fee configuration (`PriorityFeeConfig`). | Disabled |
-| `retry_backoff` | Retry strategy: `Linear` or `Exponential`. | `Exponential` |
-| `min_confidence` | Min confidence for leader hints (0-100). | `70` |
-| `keepalive` | Enable background keep-alive ping. | `true` |
-| `keepalive_interval` | Keep-alive ping interval in seconds. | `5` |
-| `idle_timeout` | Connection idle timeout. | None (no timeout) |
-
-### Billing Tiers
-
-Each API key has a billing tier that determines transaction cost, rate limits, and priority queuing. Set the tier in your config to match your API key's tier:
+Use `tokio::select!` to handle all streams concurrently:
 
 ```rust
-let config = Config::builder()
-    .api_key("sk_live_12345678")
-    .tier("pro")  // "free", "standard", "pro", or "enterprise"
-    .build()?;
-```
+let mut hints = client.subscribe_leader_hints().await?;
+let mut tips = client.subscribe_tip_instructions().await?;
+let mut fees = client.subscribe_priority_fees().await?;
+let mut bh = client.subscribe_latest_blockhash().await?;
+let mut slots = client.subscribe_latest_slot().await?;
 
-| Tier | Cost per TX | Rate Limit | Priority Slots | Daily Limit |
-|------|------------|------------|----------------|-------------|
-| **Free** | 0 (counter-based) | 5 rps | 5 | 100 tx/day |
-| **Standard** | 0.00005 SOL | 5 rps | 10 | Unlimited |
-| **Pro** | 0.0001 SOL | 20 rps | 50 | Unlimited |
-| **Enterprise** | 0.001 SOL | 100 rps | 200 | Unlimited |
-
-Free tier keys use a daily counter instead of token billing. Stream subscriptions also count against the daily limit.
-
-### Priority Fee Configuration
-
-```rust
-use allenhark_slipstream::{PriorityFeeConfig, PriorityFeeSpeed};
-
-let config = Config::builder()
-    .api_key("sk_test_123")
-    .priority_fee(PriorityFeeConfig {
-        enabled: true,
-        speed: PriorityFeeSpeed::UltraFast,
-        max_tip: Some(0.01), // Max 0.01 SOL
-    })
-    .build()?;
-```
-
-### Helper Methods
-
-```rust
-// Get the latest tip instruction (cached)
-if let Some(tip) = client.get_latest_tip().await {
-    println!("Tip {} SOL to {}", tip.tip_amount_sol, tip.tip_wallet_address);
+loop {
+    tokio::select! {
+        Some(hint) = hints.recv() => {
+            println!("Leader in {} ({}%)", hint.preferred_region, hint.confidence);
+        }
+        Some(tip) = tips.recv() => {
+            println!("Tip {} SOL to {}", tip.tip_amount_sol, tip.tip_wallet_address);
+        }
+        Some(fee) = fees.recv() => {
+            println!("Fee {} µL/CU ({}% landing)", fee.compute_unit_price, fee.landing_probability);
+        }
+        Some(blockhash) = bh.recv() => {
+            println!("Blockhash: {}", blockhash.blockhash);
+        }
+        Some(slot) = slots.recv() => {
+            println!("Slot: {}", slot.slot);
+        }
+    }
 }
-
-// Get connection status
-let status = client.connection_status().await;
-println!("State: {:?}, Protocol: {:?}", status.state, status.protocol);
-
-// Get performance metrics
-let metrics = client.metrics();
-println!("Submitted: {}, Success Rate: {:.1}%", 
-    metrics.transactions_submitted, metrics.success_rate * 100.0);
 ```
+
+---
 
 ## Keep-Alive & Time Sync
 
-The SDK includes a background keep-alive mechanism that also provides latency measurement and clock synchronization with the server using NTP-style calculation.
+Background keep-alive mechanism providing latency measurement and NTP-style clock synchronization.
 
 ```rust
-// Enabled by default (5s interval). Configure via:
+// Enabled by default (5s interval)
 let config = Config::builder()
     .api_key("sk_live_12345678")
     .keepalive(true)              // default: true
@@ -282,38 +530,66 @@ let client = SlipstreamClient::connect(config).await?;
 
 // Manual ping
 let ping = client.ping().await?;
-println!("RTT: {}ms, Clock offset: {}ms", ping.rtt_ms, ping.clock_offset_ms);
+println!("RTT: {}ms, Clock offset: {}ms, Server time: {}",
+    ping.rtt_ms, ping.clock_offset_ms, ping.server_time);
 
-// Latency (median one-way from sliding window of 10 samples)
+// Derived measurements (median from sliding window of 10 samples)
 if let Some(latency) = client.latency_ms() {
-    println!("One-way latency: {}ms", latency);
+    println!("One-way latency: {}ms", latency);     // RTT / 2
 }
-
-// Clock offset (median from sliding window)
 if let Some(offset) = client.clock_offset_ms() {
-    println!("Clock offset: {}ms", offset);
+    println!("Clock offset: {}ms", offset);          // server - client time difference
 }
-
-// Server time (local clock corrected by offset)
-let server_now = client.server_time();
-println!("Server time: {} unix ms", server_now);
+let server_now = client.server_time();                // local time + offset
 ```
+
+#### PingResult Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `seq` | `u32` | Sequence number |
+| `rtt_ms` | `u64` | Round-trip time in milliseconds |
+| `clock_offset_ms` | `i64` | Clock offset: `server_time - (client_send_time + rtt/2)` (can be negative) |
+| `server_time` | `u64` | Server timestamp at time of pong (unix millis) |
+
+---
 
 ## Token Billing
 
-The SDK provides methods to manage your token balance, view deposits, and track usage.
+Token-based billing system. Paid tiers (Standard/Pro/Enterprise) deduct tokens per transaction and stream subscription. Free tier uses a daily counter.
+
+### Token Economics
+
+| Unit | Value |
+|------|-------|
+| 1 token | 1 transaction (Standard tier) |
+| 1 token | 50,000 lamports |
+| 1 token | 0.00005 SOL |
+| 1 stream subscription | 1 token (with 1-hour reconnect grace) |
+| Min deposit | $10 USD equivalent in SOL |
+| Initial balance (new key) | 0.01 SOL (200 tokens) |
+| Grace period | -0.001 SOL (-20 tokens) before hard block |
 
 ### Check Balance
 
 ```rust
 let balance = client.get_balance().await?;
-println!("Balance: {:.6} SOL ({} tokens)", balance.balance_sol, balance.balance_tokens);
+println!("SOL:    {:.6}", balance.balance_sol);
+println!("Tokens: {}", balance.balance_tokens);
+println!("Lamports: {}", balance.balance_lamports);
 println!("Grace remaining: {} tokens", balance.grace_remaining_tokens);
 ```
 
-### Get Deposit Address
+#### Balance Fields
 
-Get your deposit wallet to top up tokens by sending SOL:
+| Field | Type | Description |
+|-------|------|-------------|
+| `balance_sol` | `f64` | Balance in SOL |
+| `balance_tokens` | `i64` | Balance in tokens (1 token = 1 query) |
+| `balance_lamports` | `i64` | Balance in lamports |
+| `grace_remaining_tokens` | `i64` | Grace tokens remaining before hard block |
+
+### Get Deposit Address
 
 ```rust
 let deposit = client.get_deposit_address().await?;
@@ -323,19 +599,16 @@ println!("Minimum: {:.4} SOL", deposit.min_amount_sol);
 
 ### Minimum Deposit
 
-Deposits must be at least **$10 USD equivalent** in SOL before tokens are credited. Deposits below this threshold are stored as pending until the cumulative total reaches $10.
+Deposits must reach **$10 USD equivalent** in SOL before tokens are credited. Deposits below this threshold accumulate as pending.
 
 ```rust
-let min_usd = client.get_minimum_deposit_usd(); // Returns 10.0
+let min_usd = client.get_minimum_deposit_usd(); // 10.0
 
-// Check pending (uncredited) deposits
 let pending = client.get_pending_deposit().await?;
 println!("Pending: {:.6} SOL ({} deposits)", pending.pending_sol, pending.pending_count);
 ```
 
 ### Deposit History
-
-View all SOL deposits with their credited/pending status:
 
 ```rust
 use allenhark_slipstream::types::DepositHistoryOptions;
@@ -346,16 +619,14 @@ let deposits = client.get_deposit_history(DepositHistoryOptions {
 }).await?;
 
 for d in &deposits {
-    println!("{} | {:.6} SOL | ${:.2} | {}",
-        &d.signature[..16], d.amount_sol,
+    println!("{:.6} SOL | ${:.2} USD | {}",
+        d.amount_sol,
         d.usd_value.unwrap_or(0.0),
         if d.credited { "CREDITED" } else { "PENDING" });
 }
 ```
 
 ### Usage History
-
-View token transaction history (debits, credits, deposits):
 
 ```rust
 use allenhark_slipstream::types::UsageHistoryOptions;
@@ -366,30 +637,38 @@ let entries = client.get_usage_history(UsageHistoryOptions {
 }).await?;
 
 for entry in &entries {
-    println!("{}: {} lamports (balance: {})",
+    println!("{}: {} lamports (balance after: {})",
         entry.tx_type, entry.amount_lamports, entry.balance_after_lamports);
 }
 ```
 
-### Token Economics
+### Free Tier Usage
 
-| Unit | Value |
-|------|-------|
-| 1 token | 1 query |
-| 1 token | 50,000 lamports |
-| 1 token | 0.00005 SOL |
-| Min deposit | $10 USD equivalent in SOL |
+For free-tier API keys, check the daily usage counter:
 
-## Architecture
+```rust
+let usage = client.get_free_tier_usage().await?;
+println!("Used: {}/{}", usage.used, usage.limit);       // e.g. 42/100
+println!("Remaining: {}", usage.remaining);              // e.g. 58
+println!("Resets at: {}", usage.resets_at);              // UTC midnight ISO string
+```
 
-1.  **Discovery**: When you call `connect()`, the SDK calls the discovery service (`GET /v1/discovery`) to fetch available workers across all regions, including their IP addresses and ports.
-2.  **Worker Selection**: The SDK filters workers by your preferred region (or uses the recommended region), then selects the best healthy worker.
-3.  **Protocol Fallback**: The client attempts to connect using **QUIC**. If that fails (e.g., firewall blocked), it tries **gRPC**, then **WebSocket**, then **HTTP**.
-4.  **Authentication**: All requests are signed and authenticated using your `api_key`.
+#### FreeTierUsage Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `used` | `u32` | Transactions used today |
+| `remaining` | `u32` | Remaining transactions today |
+| `limit` | `u32` | Daily transaction limit (100) |
+| `resets_at` | `String` | UTC midnight reset time (RFC 3339) |
+
+---
 
 ## Multi-Region Routing
 
-For optimal latency, use `MultiRegionClient` to automatically route transactions to the region closest to the current Solana leader:
+`MultiRegionClient` connects to workers across multiple regions and automatically routes transactions to the region closest to the current Solana leader.
+
+### Auto-Discovery
 
 ```rust
 use allenhark_slipstream::{Config, MultiRegionClient};
@@ -398,66 +677,82 @@ let config = Config::builder()
     .api_key("sk_live_12345678")
     .build()?;
 
-// Discovers workers across all regions automatically
 let multi = MultiRegionClient::connect(config).await?;
 
-// Transactions are routed to the best region based on leader hints
-let result = multi.submit_transaction(&tx_data).await?;
+// Transactions auto-route to the best region based on leader hints
+let result = multi.submit_transaction(&tx_bytes).await?;
 
 // Check current routing decision
 if let Some(routing) = multi.get_current_routing() {
-    println!("Routing to {} (confidence: {}%)", routing.best_region, routing.confidence);
+    println!("Best region: {} (confidence: {}%)", routing.best_region, routing.confidence);
+    println!("Leader: {}", routing.leader_pubkey);
+    println!("Expected RTT: {:?}ms", routing.expected_rtt_ms);
+    println!("Fallbacks: {:?}", routing.fallback_regions);
 }
+
+println!("Connected regions: {:?}", multi.connected_regions());
 ```
 
-## Examples
-
-The `examples/` directory contains comprehensive, runnable examples:
-
-| Example | Description |
-|---------|-------------|
-| `basic.rs` | Simple connection and disconnection |
-| `submit_transaction.rs` | Transaction submission with options |
-| `priority_fees.rs` | Priority fee configuration and streaming |
-| `tip_instructions.rs` | Tip wallet and amount streaming |
-| `leader_hints.rs` | Leader region hints for optimal routing |
-| `broadcast_tx.rs` | Fan-out to multiple regions |
-| `signer_integration.rs` | Keypair, Ledger, multi-sig, MPC signing |
-| `deduplication.rs` | Prevent duplicate transaction submissions |
-| `streaming_callbacks.rs` | All streaming subscriptions (Rust channels) |
-| `advanced_config.rs` | Full configuration options |
-| `billing.rs` | Token balance, deposits, usage history |
-
-Run any example with:
-```bash
-SLIPSTREAM_API_KEY=sk_test_xxx cargo run --example priority_fees
-```
-
-## Streaming (Callbacks)
-
-Rust uses async channels instead of JavaScript-style callbacks:
+### Manual Worker Configuration
 
 ```rust
-// Subscribe to streams
-let mut hints = client.subscribe_leader_hints().await?;
-let mut tips = client.subscribe_tip_instructions().await?;
-let mut fees = client.subscribe_priority_fees().await?;
+use allenhark_slipstream::{MultiRegionClient, Config, WorkerEndpoint, MultiRegionConfig};
 
-// Handle all streams concurrently
-loop {
-    tokio::select! {
-        Some(hint) = hints.recv() => {
-            println!("Leader in {}", hint.preferred_region);
-        }
-        Some(tip) = tips.recv() => {
-            println!("Tip {} SOL", tip.tip_amount_sol);
-        }
-        Some(fee) = fees.recv() => {
-            println!("Fee {} µL/CU", fee.compute_unit_price);
-        }
-    }
-}
+let workers = vec![
+    WorkerEndpoint::new("w1", "us-east", "10.0.1.1"),
+    WorkerEndpoint::new("w2", "eu-central", "10.0.2.1"),
+    WorkerEndpoint::new("w3", "asia-pacific", "10.0.3.1"),
+];
+
+let multi = MultiRegionClient::create(
+    Config::builder().api_key("sk_live_xxx").build()?,
+    workers,
+    MultiRegionConfig {
+        auto_follow_leader: true,
+        min_switch_confidence: 70,
+        switch_cooldown_ms: 5000,
+        broadcast_high_priority: false,
+        max_broadcast_regions: 3,
+    },
+).await?;
 ```
+
+#### MultiRegionConfig Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto_follow_leader` | `bool` | `true` | Auto-switch region based on leader hints |
+| `min_switch_confidence` | `u32` | `60` | Minimum confidence (0-100) to trigger region switch |
+| `switch_cooldown_ms` | `u64` | `500` | Cooldown between region switches (ms) |
+| `broadcast_high_priority` | `bool` | `false` | Broadcast high-priority transactions to all regions |
+| `max_broadcast_regions` | `usize` | `3` | Maximum regions for broadcast mode |
+
+### Routing Recommendation
+
+Ask the server for the current best region:
+
+```rust
+let rec = client.get_routing_recommendation().await?;
+println!("Best: {} ({}%)", rec.best_region, rec.confidence);
+println!("Leader: {}", rec.leader_pubkey);
+println!("Fallbacks: {:?} (strategy: {:?})", rec.fallback_regions, rec.fallback_strategy);
+println!("Valid for: {}ms", rec.valid_for_ms);
+```
+
+#### RoutingRecommendation Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `best_region` | `String` | Recommended region |
+| `leader_pubkey` | `String` | Current leader validator pubkey |
+| `slot` | `u64` | Current slot |
+| `confidence` | `u32` | Confidence score (0-100) |
+| `expected_rtt_ms` | `Option<u32>` | Expected RTT to leader from best region |
+| `fallback_regions` | `Vec<String>` | Fallback regions in priority order |
+| `fallback_strategy` | `FallbackStrategy` | `Sequential`, `Broadcast`, `Retry`, or `None` |
+| `valid_for_ms` | `u64` | Time until this recommendation expires |
+
+---
 
 ## Deduplication
 
@@ -471,25 +766,90 @@ let options = SubmitOptions {
 };
 
 // Same dedup_id across retries = safe from double-spend
-let result = client.submit_transaction_with_options(&tx, &options).await?;
+let result = client.submit_transaction_with_options(&tx_bytes, &options).await?;
 ```
+
+---
+
+## Connection Status & Metrics
+
+```rust
+// Connection status
+let status = client.connection_status().await;
+println!("State: {:?}", status.state);       // Connected, Disconnected, etc.
+println!("Protocol: {:?}", status.protocol); // Quic, Grpc, WebSocket, Http
+println!("Region: {:?}", status.region);
+println!("Latency: {}ms", status.latency_ms);
+
+// Performance metrics
+let metrics = client.metrics();
+println!("Submitted: {}", metrics.transactions_submitted);
+println!("Confirmed: {}", metrics.transactions_confirmed);
+println!("Avg latency: {:.1}ms", metrics.average_latency_ms);
+println!("Success rate: {:.1}%", metrics.success_rate * 100.0);
+```
+
+---
 
 ## Error Handling
 
 ```rust
 use allenhark_slipstream::SdkError;
 
-match client.submit_transaction(&tx).await {
+match client.submit_transaction(&tx_bytes).await {
     Ok(result) => println!("Signature: {:?}", result.signature),
     Err(SdkError::Connection(msg)) => println!("Connection error: {}", msg),
-    Err(SdkError::RateLimited) => println!("Rate limited, back off"),
+    Err(SdkError::Auth(msg)) => println!("Auth error: {}", msg),
+    Err(SdkError::RateLimited) => println!("Rate limited -- back off"),
+    Err(SdkError::InsufficientTokens) => {
+        let balance = client.get_balance().await?;
+        let deposit = client.get_deposit_address().await?;
+        println!("Low balance: {} tokens", balance.balance_tokens);
+        println!("Deposit to: {}", deposit.deposit_wallet);
+    }
+    Err(SdkError::Timeout) => println!("Request timed out"),
     Err(e) => println!("Error: {}", e),
 }
 ```
 
-## Governance & Support
+### Error Variants
 
-This SDK is community supported.
-- **Issues**: Please file bug reports on GitHub.
-- **Docs**: See `docs/ARCHITECTURE.md` for technical details.
-- **Enterprise Support**: Available at [allenhark.com](https://allenhark.com).
+| Variant | Description |
+|---------|-------------|
+| `Config(msg)` | Invalid configuration |
+| `Connection(msg)` | Connection failure |
+| `Auth(msg)` | Authentication failure (invalid API key) |
+| `Protocol(msg)` | Protocol-level error |
+| `Transaction(msg)` | Transaction submission error |
+| `Timeout` | Operation timed out |
+| `RateLimited` | Rate limit exceeded for your tier |
+| `NotConnected` | Client not connected |
+| `StreamClosed` | Stream closed unexpectedly |
+| `InsufficientTokens` | Token balance too low |
+| `AllProtocolsFailed` | All connection protocols failed |
+| `Internal(msg)` | Internal SDK error |
+
+---
+
+## Examples
+
+| Example | Description |
+|---------|-------------|
+| `basic.rs` | Simple connection and disconnection |
+| `submit_transaction.rs` | Transaction submission with options |
+| `streaming_callbacks.rs` | All streaming subscriptions with `tokio::select!` |
+| `priority_fees.rs` | Priority fee configuration and streaming |
+| `leader_hints.rs` | Leader region hints for optimal routing |
+| `billing.rs` | Token balance, deposits, usage history |
+| `deduplication.rs` | Prevent duplicate transaction submissions |
+| `advanced_config.rs` | Full configuration options |
+| `broadcast_tx.rs` | Fan-out to multiple regions |
+| `signer_integration.rs` | Keypair, Ledger, multi-sig, MPC signing |
+
+```bash
+SLIPSTREAM_API_KEY=sk_test_xxx cargo run --example streaming_callbacks
+```
+
+## License
+
+Apache-2.0
