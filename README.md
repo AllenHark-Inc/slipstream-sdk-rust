@@ -97,6 +97,9 @@ let config = Config::builder()
 | `keepalive(bool)` | `bool` | `true` | Enable background keep-alive ping loop |
 | `keepalive_interval(secs)` | `u64` | `5` | Keep-alive ping interval in seconds |
 | `idle_timeout(dur)` | `Duration` | none | Disconnect after idle period |
+| `webhook_url(url)` | `&str` | none | HTTPS endpoint to receive webhook POST deliveries |
+| `webhook_events(events)` | `Vec<String>` | `["transaction.confirmed"]` | Webhook event types to subscribe to |
+| `webhook_notification_level(level)` | `&str` | `"final"` | Transaction notification level: `"all"`, `"final"`, or `"confirmed"` |
 
 ### Billing Tiers
 
@@ -558,17 +561,27 @@ let server_now = client.server_time();                // local time + offset
 
 Token-based billing system. Paid tiers (Standard/Pro/Enterprise) deduct tokens per transaction and stream subscription. Free tier uses a daily counter.
 
+### Billing Costs
+
+| Operation | Cost | Notes |
+|-----------|------|-------|
+| Transaction submission | 1 token (0.00005 SOL) | Per transaction sent to Solana |
+| Stream subscription | 1 token (0.00005 SOL) | Per stream type; 1-hour reconnect grace period |
+| Webhook delivery | 0.00001 SOL (10,000 lamports) | Per successful POST delivery; retries not charged |
+| Keep-alive ping | Free | Background ping/pong not billed |
+| Discovery | Free | `GET /v1/discovery` has no auth or billing |
+| Balance/billing queries | Free | `get_balance()`, `get_usage_history()`, etc. |
+| Webhook management | Free | `register_webhook()`, `get_webhook()`, `delete_webhook()` not billed |
+| Free tier daily limit | 100 operations/day | Transactions + stream subs + webhook deliveries all count |
+
 ### Token Economics
 
 | Unit | Value |
 |------|-------|
-| 1 token | 1 transaction (Standard tier) |
-| 1 token | 50,000 lamports |
-| 1 token | 0.00005 SOL |
-| 1 stream subscription | 1 token (with 1-hour reconnect grace) |
-| Min deposit | $10 USD equivalent in SOL |
-| Initial balance (new key) | 0.01 SOL (200 tokens) |
-| Grace period | -0.001 SOL (-20 tokens) before hard block |
+| 1 token | 0.00005 SOL = 50,000 lamports |
+| Initial balance | 200 tokens (0.01 SOL) per new API key |
+| Minimum deposit | 2,000 tokens (0.1 SOL / ~$10 USD) |
+| Grace period | -20 tokens (-0.001 SOL) before hard block |
 
 ### Check Balance
 
@@ -661,6 +674,139 @@ println!("Resets at: {}", usage.resets_at);              // UTC midnight ISO str
 | `remaining` | `u32` | Remaining transactions today |
 | `limit` | `u32` | Daily transaction limit (100) |
 | `resets_at` | `String` | UTC midnight reset time (RFC 3339) |
+
+---
+
+## Webhooks
+
+Server-side HTTP notifications for transaction lifecycle events and billing alerts. One webhook per API key.
+
+### Setup
+
+Register a webhook via config (auto-registers on connect) or manually:
+
+```rust
+// Option 1: Via config (auto-registers on connect)
+let config = Config::builder()
+    .api_key("sk_live_12345678")
+    .webhook_url("https://your-server.com/webhooks/slipstream")
+    .webhook_events(vec![
+        "transaction.confirmed".to_string(),
+        "transaction.failed".to_string(),
+        "billing.low_balance".to_string(),
+    ])
+    .webhook_notification_level("final")
+    .build()?;
+
+let client = SlipstreamClient::connect(config).await?;
+
+// Option 2: Manual registration
+let webhook = client.register_webhook(
+    "https://your-server.com/webhooks/slipstream",
+    Some(vec!["transaction.confirmed", "billing.low_balance"]),
+    Some("final"),
+).await?;
+
+println!("Webhook ID: {}", webhook.id);
+println!("Secret: {}", webhook.secret);  // Save this -- shown only once
+```
+
+### Manage Webhooks
+
+```rust
+// Get current webhook config
+if let Some(webhook) = client.get_webhook().await? {
+    println!("URL: {}", webhook.url);
+    println!("Events: {:?}", webhook.events);
+    println!("Active: {}", webhook.is_active);
+}
+
+// Remove webhook
+client.delete_webhook().await?;
+```
+
+### Event Types
+
+| Event | Description | Payload |
+|-------|-------------|---------|
+| `transaction.sent` | TX accepted and sent to Solana | `signature`, `region`, `sender`, `latency_ms` |
+| `transaction.confirmed` | TX confirmed on-chain | `signature`, `confirmed_slot`, `confirmation_time_ms`, full `getTransaction` response |
+| `transaction.failed` | TX timed out or errored | `signature`, `error`, `elapsed_ms` |
+| `billing.low_balance` | Balance below threshold | `balance_tokens`, `threshold_tokens` |
+| `billing.depleted` | Balance at zero / grace period | `balance_tokens`, `grace_remaining_tokens` |
+| `billing.deposit_received` | SOL deposit credited | `amount_sol`, `tokens_credited`, `new_balance_tokens` |
+
+### Notification Levels (transaction events only)
+
+| Level | Events delivered |
+|-------|-----------------|
+| `all` | `transaction.sent` + `transaction.confirmed` + `transaction.failed` |
+| `final` | `transaction.confirmed` + `transaction.failed` (terminal states only) |
+| `confirmed` | `transaction.confirmed` only |
+
+Billing events are always delivered when subscribed (no level filtering).
+
+### Webhook Payload
+
+Each POST includes these headers:
+- `X-Slipstream-Signature: sha256=<hex>` -- HMAC-SHA256 of body using webhook secret
+- `X-Slipstream-Timestamp: <unix_seconds>` -- for replay protection
+- `X-Slipstream-Event: <event_type>` -- event name
+- `Content-Type: application/json`
+
+```json
+{
+  "id": "evt_01H...",
+  "type": "transaction.confirmed",
+  "created_at": 1707000000,
+  "api_key_prefix": "sk_live_",
+  "data": {
+    "signature": "5K8c...",
+    "transaction_id": "uuid",
+    "confirmed_slot": 245678902,
+    "confirmation_time_ms": 450,
+    "transaction": { "...full Solana getTransaction response..." }
+  }
+}
+```
+
+### Verifying Webhook Signatures
+
+```rust
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn verify_webhook(body: &[u8], signature_header: &str, secret: &str) -> bool {
+    let expected = signature_header.strip_prefix("sha256=").unwrap_or("");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body);
+    let computed = hex::encode(mac.finalize().into_bytes());
+    computed == expected
+}
+```
+
+### Billing
+
+Each successful webhook delivery costs **0.00001 SOL (10,000 lamports)**. Failed deliveries (non-2xx or timeout) are not charged. Free tier deliveries count against the daily limit.
+
+### Retry Policy
+
+- Max 3 attempts: immediate, then 30s, then 5 minutes
+- Webhook auto-disabled after 10 consecutive failed deliveries
+
+#### WebhookConfig Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `String` | Webhook ID |
+| `url` | `String` | Delivery URL |
+| `secret` | `Option<String>` | HMAC signing secret (only shown on registration) |
+| `events` | `Vec<String>` | Subscribed event types |
+| `notification_level` | `String` | Transaction notification level |
+| `is_active` | `bool` | Whether webhook is active |
+| `created_at` | `String` | Creation timestamp (RFC 3339) |
 
 ---
 
