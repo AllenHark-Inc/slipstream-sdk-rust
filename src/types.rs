@@ -882,3 +882,87 @@ pub struct PerformanceMetrics {
     /// Success rate (0.0 - 1.0)
     pub success_rate: f64,
 }
+
+// =============================================================================
+// Webhook Types
+// =============================================================================
+
+/// Webhook event types that can be subscribed to
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebhookEvent {
+    #[serde(rename = "transaction.sent")]
+    TransactionSent,
+    #[serde(rename = "transaction.confirmed")]
+    TransactionConfirmed,
+    #[serde(rename = "transaction.failed")]
+    TransactionFailed,
+    #[serde(rename = "billing.low_balance")]
+    BillingLowBalance,
+    #[serde(rename = "billing.depleted")]
+    BillingDepleted,
+    #[serde(rename = "billing.deposit_received")]
+    BillingDepositReceived,
+}
+
+impl WebhookEvent {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TransactionSent => "transaction.sent",
+            Self::TransactionConfirmed => "transaction.confirmed",
+            Self::TransactionFailed => "transaction.failed",
+            Self::BillingLowBalance => "billing.low_balance",
+            Self::BillingDepleted => "billing.depleted",
+            Self::BillingDepositReceived => "billing.deposit_received",
+        }
+    }
+}
+
+/// Webhook notification level for transaction events
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebhookNotificationLevel {
+    /// Receive all transaction events (sent + confirmed + failed)
+    All,
+    /// Receive only terminal events (confirmed + failed)
+    Final,
+    /// Receive only confirmed events
+    Confirmed,
+}
+
+impl Default for WebhookNotificationLevel {
+    fn default() -> Self {
+        Self::Final
+    }
+}
+
+/// Webhook configuration returned by the server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// Webhook ID
+    pub id: String,
+    /// Webhook URL (HTTPS endpoint)
+    pub url: String,
+    /// Webhook secret (only visible on register/update; masked on GET)
+    pub secret: Option<String>,
+    /// Subscribed event types
+    pub events: Vec<String>,
+    /// Notification level for transaction events
+    pub notification_level: String,
+    /// Whether the webhook is currently active
+    pub is_active: bool,
+    /// ISO 8601 creation timestamp
+    pub created_at: Option<String>,
+}
+
+/// Request payload for registering or updating a webhook
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterWebhookRequest {
+    /// HTTPS URL to receive webhook POSTs
+    pub url: String,
+    /// Event types to subscribe to (default: ["transaction.confirmed"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<Vec<String>>,
+    /// Notification level for transaction events (default: "final")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_level: Option<String>,
+}

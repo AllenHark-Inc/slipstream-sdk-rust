@@ -30,8 +30,9 @@ use crate::discovery::DiscoveryClient;
 use crate::error::{Result, SdkError};
 use crate::types::{
     Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy, LatestBlockhash,
-    LatestSlot, LeaderHint, PerformanceMetrics, PingResult, PriorityFee, RoutingRecommendation,
-    SubmitOptions, TipInstruction, TopUpInfo, TransactionResult, UsageEntry, UsageHistoryOptions,
+    LatestSlot, LeaderHint, PerformanceMetrics, PingResult, PriorityFee, RegisterWebhookRequest,
+    RoutingRecommendation, SubmitOptions, TipInstruction, TopUpInfo, TransactionResult, UsageEntry,
+    UsageHistoryOptions, WebhookConfig,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -216,7 +217,7 @@ impl SlipstreamClient {
             None
         };
 
-        Ok(Self {
+        let client = Self {
             config,
             transport,
             connection_info,
@@ -230,7 +231,23 @@ impl SlipstreamClient {
             }),
             time_sync,
             keepalive_handle: tokio::sync::Mutex::new(keepalive_handle),
-        })
+        };
+
+        // Auto-register webhook if configured
+        if client.config.webhook_url.is_some() {
+            let url = client.config.webhook_url.clone().unwrap();
+            let events = client.config.webhook_events.clone();
+            let level = client.config.webhook_notification_level.clone();
+            match client
+                .register_webhook(&url, Some(events), Some(level))
+                .await
+            {
+                Ok(_) => info!("Webhook auto-registered at {}", url),
+                Err(e) => debug!("Failed to auto-register webhook: {}", e),
+            }
+        }
+
+        Ok(client)
     }
 
     /// Get the current connection information
@@ -766,6 +783,116 @@ impl SlipstreamClient {
         let result = transport.ping().await?;
         self.time_sync.record(result.clone());
         Ok(result)
+    }
+
+    // ========================================================================
+    // Webhook Methods
+    // ========================================================================
+
+    /// Register or update a webhook for this API key
+    ///
+    /// If a webhook already exists for this key, it will be updated.
+    /// Returns the webhook configuration including the secret (only visible
+    /// on register/update).
+    pub async fn register_webhook(
+        &self,
+        url: &str,
+        events: Option<Vec<String>>,
+        notification_level: Option<String>,
+    ) -> Result<WebhookConfig> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let api_url = format!("{}/v1/webhooks", base_url);
+
+        let request = RegisterWebhookRequest {
+            url: url.to_string(),
+            events,
+            notification_level,
+        };
+
+        let response = self
+            .http_client
+            .post(&api_url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .json(&request)
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to register webhook: {}",
+                error_text
+            )));
+        }
+
+        let config: WebhookConfig = response.json().await?;
+        Ok(config)
+    }
+
+    /// Get current webhook configuration for this API key
+    ///
+    /// Returns the webhook configuration with the secret masked.
+    /// Returns None if no webhook is configured.
+    pub async fn get_webhook(&self) -> Result<Option<WebhookConfig>> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/webhooks", base_url);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to get webhook: {}",
+                error_text
+            )));
+        }
+
+        let config: WebhookConfig = response.json().await?;
+        Ok(Some(config))
+    }
+
+    /// Delete (disable) the webhook for this API key
+    pub async fn delete_webhook(&self) -> Result<()> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/webhooks", base_url);
+
+        let response = self
+            .http_client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to delete webhook: {}",
+                error_text
+            )));
+        }
+
+        Ok(())
     }
 }
 

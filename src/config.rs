@@ -81,6 +81,15 @@ pub struct Config {
 
     /// Keep-alive ping interval (default: 5 seconds)
     pub keepalive_interval: Duration,
+
+    /// Webhook URL (HTTPS endpoint to receive webhook POSTs). If set, auto-registers on connect.
+    pub webhook_url: Option<String>,
+
+    /// Webhook event types to subscribe to (default: ["transaction.confirmed"])
+    pub webhook_events: Vec<String>,
+
+    /// Webhook notification level for transaction events (default: "final")
+    pub webhook_notification_level: String,
 }
 
 /// Protocol timeout configuration
@@ -170,6 +179,9 @@ pub struct ConfigBuilder {
     tier: Option<String>,
     keepalive: Option<bool>,
     keepalive_interval: Option<Duration>,
+    webhook_url: Option<String>,
+    webhook_events: Option<Vec<String>>,
+    webhook_notification_level: Option<String>,
 }
 
 impl ConfigBuilder {
@@ -293,6 +305,24 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set webhook URL (HTTPS endpoint). If set, SDK auto-registers the webhook on connect.
+    pub fn webhook_url(mut self, url: impl Into<String>) -> Self {
+        self.webhook_url = Some(url.into());
+        self
+    }
+
+    /// Set webhook event types to subscribe to (default: ["transaction.confirmed"])
+    pub fn webhook_events(mut self, events: Vec<String>) -> Self {
+        self.webhook_events = Some(events);
+        self
+    }
+
+    /// Set webhook notification level for transaction events (default: "final")
+    pub fn webhook_notification_level(mut self, level: impl Into<String>) -> Self {
+        self.webhook_notification_level = Some(level.into());
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> Result<Config> {
         let config = Config {
@@ -321,6 +351,13 @@ impl ConfigBuilder {
             tier: self.tier.unwrap_or_else(|| "pro".to_string()),
             keepalive: self.keepalive.unwrap_or(true),
             keepalive_interval: self.keepalive_interval.unwrap_or(Duration::from_secs(5)),
+            webhook_url: self.webhook_url,
+            webhook_events: self.webhook_events.unwrap_or_else(|| {
+                vec!["transaction.confirmed".to_string()]
+            }),
+            webhook_notification_level: self
+                .webhook_notification_level
+                .unwrap_or_else(|| "final".to_string()),
         };
 
         config.validate()?;
