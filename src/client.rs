@@ -29,8 +29,9 @@ use crate::connection::{FallbackChain, Transport};
 use crate::discovery::DiscoveryClient;
 use crate::error::{Result, SdkError};
 use crate::types::{
-    Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy, LatestBlockhash,
-    LatestSlot, LeaderHint, PerformanceMetrics, PingResult, PriorityFee, RegisterWebhookRequest,
+    Balance, BundleResult, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
+    LandingRateOptions, LandingRateStats, LatestBlockhash, LatestSlot, LeaderHint,
+    PerformanceMetrics, PingResult, PriorityFee, RegisterWebhookRequest,
     RoutingRecommendation, SubmitOptions, TipInstruction, TopUpInfo, TransactionResult, UsageEntry,
     UsageHistoryOptions, WebhookConfig,
 };
@@ -754,6 +755,91 @@ impl SlipstreamClient {
     }
 
     // ========================================================================
+    // Bundle Submission
+    // ========================================================================
+
+    /// Submit a bundle of transactions for atomic execution
+    ///
+    /// Bundles contain 2-5 transactions that are executed atomically — either
+    /// all succeed or none. The sender must support bundle submission.
+    ///
+    /// # Arguments
+    ///
+    /// * `transactions` - 2 to 5 signed transactions (raw bytes)
+    ///
+    /// # Returns
+    ///
+    /// Bundle result with bundle ID, acceptance status, and individual signatures
+    ///
+    /// # Billing
+    ///
+    /// Bundle submission costs 5 tokens (0.00025 SOL) per bundle, regardless of
+    /// the number of transactions in the bundle.
+    pub async fn submit_bundle(&self, transactions: &[Vec<u8>]) -> Result<BundleResult> {
+        self.submit_bundle_with_tip(transactions, None).await
+    }
+
+    /// Submit a bundle with an optional tip amount
+    ///
+    /// # Arguments
+    ///
+    /// * `transactions` - 2 to 5 signed transactions (raw bytes)
+    /// * `tip_lamports` - Optional tip amount in lamports
+    pub async fn submit_bundle_with_tip(
+        &self,
+        transactions: &[Vec<u8>],
+        tip_lamports: Option<u64>,
+    ) -> Result<BundleResult> {
+        if transactions.len() < 2 || transactions.len() > 5 {
+            return Err(SdkError::config(
+                "Bundle must contain 2-5 transactions",
+            ));
+        }
+
+        debug!(
+            tx_count = transactions.len(),
+            tip = ?tip_lamports,
+            "Submitting bundle"
+        );
+
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/bundles/submit", base_url);
+
+        let txs_base64: Vec<String> = transactions
+            .iter()
+            .map(|tx| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, tx))
+            .collect();
+
+        let body = serde_json::json!({
+            "transactions": txs_base64,
+            "tip_lamports": tip_lamports,
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .json(&body)
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to submit bundle: {}",
+                error_text
+            )));
+        }
+
+        let result: BundleResult = response.json().await?;
+        Ok(result)
+    }
+
+    // ========================================================================
     // Keep-Alive & Time Sync Methods
     // ========================================================================
 
@@ -893,6 +979,58 @@ impl SlipstreamClient {
         }
 
         Ok(())
+    }
+
+    // ========================================================================
+    // Landing Rates
+    // ========================================================================
+
+    /// Get transaction landing rate statistics for this API key.
+    ///
+    /// Returns overall landing rate plus per-sender and per-region breakdowns.
+    /// Defaults to the last 24 hours if no time range is specified.
+    pub async fn get_landing_rates(
+        &self,
+        options: Option<LandingRateOptions>,
+    ) -> Result<LandingRateStats> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let mut url = format!("{}/v1/metrics/landing-rates", base_url);
+
+        if let Some(opts) = &options {
+            let mut params = Vec::new();
+            if let Some(start) = &opts.start {
+                params.push(format!("start={}", start));
+            }
+            if let Some(end) = &opts.end {
+                params.push(format!("end={}", end));
+            }
+            if !params.is_empty() {
+                url.push('?');
+                url.push_str(&params.join("&"));
+            }
+        }
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to get landing rates: {}",
+                error_text
+            )));
+        }
+
+        let stats: LandingRateStats = response.json().await?;
+        Ok(stats)
     }
 }
 

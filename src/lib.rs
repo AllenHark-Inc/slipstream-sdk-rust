@@ -88,12 +88,14 @@ pub use config::{BackoffStrategy, Config, ConfigBuilder, PriorityFeeConfig, Prot
 pub use error::{Result, SdkError};
 pub use multi_region::MultiRegionClient;
 pub use types::{
-    AlternativeSender, Balance, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
-    FreeTierUsage, LatestBlockhash, LatestSlot, LeaderHint, LeaderHintMetadata, MultiRegionConfig,
-    PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionStatus,
-    RegisterWebhookRequest, RoutingInfo, RoutingRecommendation, SubmitOptions, TipInstruction,
-    TopUpInfo, TransactionError, TransactionResult, TransactionStatus, UsageEntry,
-    UsageHistoryOptions, WebhookConfig, WebhookEvent, WebhookNotificationLevel, WorkerEndpoint,
+    AlternativeSender, Balance, BundleResult, ConnectionInfo, ConnectionState, ConnectionStatus,
+    FallbackStrategy, FreeTierUsage, LandingRateOptions, LandingRatePeriod, LandingRateStats,
+    LatestBlockhash, LatestSlot, LeaderHint, LeaderHintMetadata, MultiRegionConfig,
+    PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionLandingRate,
+    RegionStatus, RegisterWebhookRequest, RoutingInfo, RoutingRecommendation, SenderLandingRate,
+    SubmitOptions, TipInstruction, TopUpInfo, TransactionError, TransactionResult,
+    TransactionStatus, UsageEntry, UsageHistoryOptions, WebhookConfig, WebhookEvent,
+    WebhookNotificationLevel, WorkerEndpoint,
 };
 
 /// SDK version

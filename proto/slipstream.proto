@@ -17,6 +17,9 @@ service SlipstreamService {
   // Submit transactions with bidirectional streaming for status updates
   rpc SubmitTransaction(stream TransactionRequest) returns (stream TransactionResponse);
 
+  // Submit a bundle of transactions for atomic execution
+  rpc SubmitBundle(BundleRequest) returns (BundleResponse);
+
   // Get current connection status and rate limits
   rpc GetConnectionStatus(ConnectionStatusRequest) returns (ConnectionStatusResponse);
 }
@@ -175,6 +178,32 @@ message ErrorInfo {
   string code = 1;
   string message = 2;
   map<string, string> details = 3;
+}
+
+// Bundle submission request (2-5 transactions executed atomically)
+message BundleRequest {
+  // Client-generated request ID for correlation
+  string request_id = 1;
+  // Signed transactions (2-5 required)
+  repeated bytes transactions = 2;
+  // Optional tip amount in lamports
+  uint64 tip_lamports = 3;
+}
+
+// Bundle submission response
+message BundleResponse {
+  // Original request ID
+  string request_id = 1;
+  // Bundle ID (hash of all transaction signatures)
+  string bundle_id = 2;
+  // Whether the bundle was accepted
+  bool accepted = 3;
+  // Individual transaction signatures
+  repeated string signatures = 4;
+  // Sender that processed the bundle
+  string sender_id = 5;
+  // Error details (if failed)
+  ErrorInfo error = 6;
 }
 
 // Connection status request

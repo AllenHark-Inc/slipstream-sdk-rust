@@ -954,6 +954,81 @@ pub struct WebhookConfig {
     pub created_at: Option<String>,
 }
 
+// =============================================================================
+// Landing Rate Types
+// =============================================================================
+
+/// Overall landing rate statistics for the authenticated API key
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LandingRateStats {
+    /// Time period
+    pub period: LandingRatePeriod,
+    /// Total transactions sent
+    pub total_sent: i64,
+    /// Total transactions confirmed on-chain
+    pub total_landed: i64,
+    /// Landing rate (0.0 – 1.0)
+    pub landing_rate: f64,
+    /// Per-sender breakdown
+    pub by_sender: Vec<SenderLandingRate>,
+    /// Per-region breakdown
+    pub by_region: Vec<RegionLandingRate>,
+}
+
+/// Time period for landing rate queries
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LandingRatePeriod {
+    pub start: String,
+    pub end: String,
+}
+
+/// Per-sender landing rate
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SenderLandingRate {
+    pub sender: String,
+    pub total_sent: i64,
+    pub total_landed: i64,
+    pub landing_rate: f64,
+}
+
+/// Per-region landing rate
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegionLandingRate {
+    pub region: String,
+    pub total_sent: i64,
+    pub total_landed: i64,
+    pub landing_rate: f64,
+}
+
+/// Options for querying landing rates
+#[derive(Debug, Clone, Default)]
+pub struct LandingRateOptions {
+    /// Start of time range (RFC 3339). Defaults to 24h ago on server.
+    pub start: Option<String>,
+    /// End of time range (RFC 3339). Defaults to now on server.
+    pub end: Option<String>,
+}
+
+// =============================================================================
+// Bundle Types
+// =============================================================================
+
+/// Bundle submission result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleResult {
+    /// Bundle ID (hash of all transaction signatures)
+    pub bundle_id: String,
+    /// Whether the bundle was accepted
+    pub accepted: bool,
+    /// Individual transaction signatures
+    pub signatures: Vec<String>,
+    /// Sender that processed the bundle
+    pub sender_id: Option<String>,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
 /// Request payload for registering or updating a webhook
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterWebhookRequest {
