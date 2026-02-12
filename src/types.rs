@@ -927,6 +927,12 @@ pub enum WebhookEvent {
     TransactionConfirmed,
     #[serde(rename = "transaction.failed")]
     TransactionFailed,
+    #[serde(rename = "bundle.sent")]
+    BundleSent,
+    #[serde(rename = "bundle.confirmed")]
+    BundleConfirmed,
+    #[serde(rename = "bundle.failed")]
+    BundleFailed,
     #[serde(rename = "billing.low_balance")]
     BillingLowBalance,
     #[serde(rename = "billing.depleted")]
@@ -941,6 +947,9 @@ impl WebhookEvent {
             Self::TransactionSent => "transaction.sent",
             Self::TransactionConfirmed => "transaction.confirmed",
             Self::TransactionFailed => "transaction.failed",
+            Self::BundleSent => "bundle.sent",
+            Self::BundleConfirmed => "bundle.confirmed",
+            Self::BundleFailed => "bundle.failed",
             Self::BillingLowBalance => "billing.low_balance",
             Self::BillingDepleted => "billing.depleted",
             Self::BillingDepositReceived => "billing.deposit_received",

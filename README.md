@@ -783,17 +783,20 @@ client.delete_webhook().await?;
 | `transaction.sent` | TX accepted and sent to Solana | `signature`, `region`, `sender`, `latency_ms` |
 | `transaction.confirmed` | TX confirmed on-chain | `signature`, `confirmed_slot`, `confirmation_time_ms`, full `getTransaction` response |
 | `transaction.failed` | TX timed out or errored | `signature`, `error`, `elapsed_ms` |
+| `bundle.sent` | Bundle submitted to sender | `bundle_id`, `region`, `sender`, `latency_ms` |
+| `bundle.confirmed` | All transactions in bundle confirmed on-chain | `bundle_id`, `signatures`, `confirmed_slot`, `confirmation_time_ms` |
+| `bundle.failed` | Bundle timed out with partial confirmations | `bundle_id`, `error`, `elapsed_ms` |
 | `billing.low_balance` | Balance below threshold | `balance_tokens`, `threshold_tokens` |
 | `billing.depleted` | Balance at zero / grace period | `balance_tokens`, `grace_remaining_tokens` |
 | `billing.deposit_received` | SOL deposit credited | `amount_sol`, `tokens_credited`, `new_balance_tokens` |
 
-### Notification Levels (transaction events only)
+### Notification Levels (transaction and bundle events)
 
 | Level | Events delivered |
 |-------|-----------------|
-| `all` | `transaction.sent` + `transaction.confirmed` + `transaction.failed` |
-| `final` | `transaction.confirmed` + `transaction.failed` (terminal states only) |
-| `confirmed` | `transaction.confirmed` only |
+| `all` | `transaction.sent` + `transaction.confirmed` + `transaction.failed` + `bundle.sent` + `bundle.confirmed` + `bundle.failed` |
+| `final` | `transaction.confirmed` + `transaction.failed` + `bundle.confirmed` + `bundle.failed` (terminal states only) |
+| `confirmed` | `transaction.confirmed` + `bundle.confirmed` only |
 
 Billing events are always delivered when subscribed (no level filtering).
 
