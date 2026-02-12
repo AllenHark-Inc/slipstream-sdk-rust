@@ -31,9 +31,9 @@ use crate::error::{Result, SdkError};
 use crate::types::{
     Balance, BundleResult, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
     LandingRateOptions, LandingRateStats, LatestBlockhash, LatestSlot, LeaderHint,
-    PerformanceMetrics, PingResult, PriorityFee, RegisterWebhookRequest,
-    RoutingRecommendation, SubmitOptions, TipInstruction, TopUpInfo, TransactionResult, UsageEntry,
-    UsageHistoryOptions, WebhookConfig,
+    PerformanceMetrics, PingResult, PriorityFee, RegisterWebhookRequest, RpcResponse,
+    RoutingRecommendation, SimulationResult, SubmitOptions, TipInstruction, TopUpInfo,
+    TransactionResult, UsageEntry, UsageHistoryOptions, WebhookConfig,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1031,6 +1031,119 @@ impl SlipstreamClient {
 
         let stats: LandingRateStats = response.json().await?;
         Ok(stats)
+    }
+
+    // === Solana RPC Proxy ===
+
+    /// Execute a Solana JSON-RPC call via the Slipstream proxy.
+    ///
+    /// Costs 1 token (0.00005 SOL) per call. Only methods from the allowlist
+    /// are supported (simulateTransaction, getTransaction, getBalance, etc.).
+    ///
+    /// Returns the raw JSON-RPC 2.0 response.
+    pub async fn rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<RpcResponse> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/rpc", base_url);
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .json(&body)
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if response.status() == reqwest::StatusCode::PAYMENT_REQUIRED {
+            return Err(SdkError::Internal(
+                "Insufficient token balance for RPC query".to_string(),
+            ));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!("RPC proxy error: {}", error_text)));
+        }
+
+        let rpc_response: RpcResponse = response.json().await?;
+        Ok(rpc_response)
+    }
+
+    /// Simulate a transaction without submitting it to the network.
+    ///
+    /// Costs 1 token. Returns simulation result with logs and compute units.
+    pub async fn simulate_transaction(&self, transaction: &[u8]) -> Result<SimulationResult> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let tx_b64 = STANDARD.encode(transaction);
+
+        let response = self
+            .rpc(
+                "simulateTransaction",
+                serde_json::json!([tx_b64, {
+                    "encoding": "base64",
+                    "commitment": "confirmed",
+                    "replaceRecentBlockhash": true,
+                }]),
+            )
+            .await?;
+
+        if let Some(error) = response.error {
+            return Err(SdkError::Internal(format!(
+                "RPC error {}: {}",
+                error.code, error.message
+            )));
+        }
+
+        let result_value = response
+            .result
+            .ok_or_else(|| SdkError::Internal("No result in RPC response".to_string()))?;
+
+        // simulateTransaction returns { value: { err, logs, unitsConsumed, returnData } }
+        let value = result_value
+            .get("value")
+            .cloned()
+            .unwrap_or(result_value);
+
+        let sim: SimulationResult = serde_json::from_value(value)
+            .map_err(|e| SdkError::Internal(format!("Failed to parse simulation result: {}", e)))?;
+
+        Ok(sim)
+    }
+
+    /// Simulate each transaction in a bundle sequentially.
+    ///
+    /// Costs 1 token per transaction simulated. Stops on first failure.
+    /// Returns a Vec of SimulationResult (one per transaction attempted).
+    pub async fn simulate_bundle(
+        &self,
+        transactions: &[Vec<u8>],
+    ) -> Result<Vec<SimulationResult>> {
+        let mut results = Vec::with_capacity(transactions.len());
+
+        for tx in transactions {
+            let sim = self.simulate_transaction(tx).await?;
+            let failed = sim.err.is_some();
+            results.push(sim);
+            if failed {
+                break;
+            }
+        }
+
+        Ok(results)
     }
 }
 

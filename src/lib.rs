@@ -92,10 +92,10 @@ pub use types::{
     FallbackStrategy, FreeTierUsage, LandingRateOptions, LandingRatePeriod, LandingRateStats,
     LatestBlockhash, LatestSlot, LeaderHint, LeaderHintMetadata, MultiRegionConfig,
     PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionLandingRate,
-    RegionStatus, RegisterWebhookRequest, RoutingInfo, RoutingRecommendation, SenderLandingRate,
-    SubmitOptions, TipInstruction, TopUpInfo, TransactionError, TransactionResult,
-    TransactionStatus, UsageEntry, UsageHistoryOptions, WebhookConfig, WebhookEvent,
-    WebhookNotificationLevel, WorkerEndpoint,
+    RegionStatus, RegisterWebhookRequest, RetryOptions, RoutingInfo, RoutingRecommendation,
+    RpcError, RpcResponse, SenderLandingRate, SimulationResult, SubmitOptions, TipInstruction,
+    TopUpInfo, TransactionError, TransactionResult, TransactionStatus, UsageEntry,
+    UsageHistoryOptions, WebhookConfig, WebhookEvent, WebhookNotificationLevel, WorkerEndpoint,
 };
 
 /// SDK version

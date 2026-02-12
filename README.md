@@ -19,6 +19,8 @@ The official Rust client for **AllenHark Slipstream**, the high-performance Sola
 - **Billing tiers** -- Free (100 tx/day), Standard, Pro, Enterprise with tier-specific rate limits
 - **Token billing** -- check balance, deposit SOL, view usage and deposit history
 - **Keep-alive & time sync** -- background ping with RTT measurement and NTP-style clock synchronization
+- **Atomic bundles** -- submit 2-5 transactions as a Jito-style atomic bundle
+- **Solana RPC proxy** -- 22 Solana JSON-RPC methods proxied through Slipstream (accounts, transactions, tokens, fees, cluster info)
 - **Deduplication** -- prevent duplicate submissions with custom dedup IDs
 
 ## Installation
@@ -314,6 +316,52 @@ let result = client.submit_transaction_with_options(&tx_bytes, &SubmitOptions {
 
 ---
 
+## Atomic Bundles
+
+Submit 2-5 transactions as a Jito-style atomic bundle. All transactions execute sequentially and atomically -- either all land or none do.
+
+### Basic Bundle
+
+```rust
+let txs = vec![tx1_bytes, tx2_bytes, tx3_bytes];
+let result = client.submit_bundle(&txs).await?;
+println!("Bundle ID: {}", result.bundle_id);
+println!("Accepted: {}", result.accepted);
+for sig in &result.signatures {
+    println!("  Signature: {}", sig);
+}
+```
+
+### Bundle with Tip
+
+```rust
+// Explicit tip amount in lamports
+let result = client.submit_bundle_with_tip(&txs, Some(100_000)).await?;
+println!("Sender: {:?}", result.sender_id);
+```
+
+### BundleResult Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bundle_id` | `String` | Unique bundle identifier |
+| `accepted` | `bool` | Whether the bundle was accepted by the sender |
+| `signatures` | `Vec<String>` | Transaction signatures (base58) |
+| `sender_id` | `Option<String>` | Sender that processed the bundle |
+| `error` | `Option<String>` | Error message if rejected |
+
+### Bundle Constraints
+
+| Constraint | Value |
+|------------|-------|
+| Min transactions | 2 |
+| Max transactions | 5 |
+| Cost | 5 tokens (0.00025 SOL) flat rate per bundle |
+| Execution | Atomic -- all-or-nothing sequential execution |
+| Sender requirement | Must have `supports_bundles` enabled |
+
+---
+
 ## Streaming
 
 Real-time data feeds over QUIC (binary) or WebSocket (JSON).
@@ -566,13 +614,16 @@ Token-based billing system. Paid tiers (Standard/Pro/Enterprise) deduct tokens p
 | Operation | Cost | Notes |
 |-----------|------|-------|
 | Transaction submission | 1 token (0.00005 SOL) | Per transaction sent to Solana |
+| Bundle submission | 5 tokens (0.00025 SOL) | Per bundle (2-5 transactions, flat rate) |
 | Stream subscription | 1 token (0.00005 SOL) | Per stream type; 1-hour reconnect grace period |
 | Webhook delivery | 0.00001 SOL (10,000 lamports) | Per successful POST delivery; retries not charged |
 | Keep-alive ping | Free | Background ping/pong not billed |
 | Discovery | Free | `GET /v1/discovery` has no auth or billing |
 | Balance/billing queries | Free | `get_balance()`, `get_usage_history()`, etc. |
+| RPC query | 1 token (0.00005 SOL) | Per `rpc()` call; `simulateTransaction`, `getTransaction`, etc. |
+| Bundle simulation | 1 token (0.00005 SOL) | Per `simulate_bundle()` call (wraps `simulateTransaction` per TX) |
 | Webhook management | Free | `register_webhook()`, `get_webhook()`, `delete_webhook()` not billed |
-| Free tier daily limit | 100 operations/day | Transactions + stream subs + webhook deliveries all count |
+| Free tier daily limit | 100 operations/day | Transactions + stream subs + webhook deliveries + RPC queries all count |
 
 ### Token Economics
 
@@ -897,6 +948,132 @@ println!("Valid for: {}ms", rec.valid_for_ms);
 | `fallback_regions` | `Vec<String>` | Fallback regions in priority order |
 | `fallback_strategy` | `FallbackStrategy` | `Sequential`, `Broadcast`, `Retry`, or `None` |
 | `valid_for_ms` | `u64` | Time until this recommendation expires |
+
+---
+
+## Solana RPC Proxy
+
+Proxy standard Solana JSON-RPC methods through Slipstream via `POST /v1/rpc`. Each RPC query costs 1 token (0.00005 SOL). Free tier queries count against the 100/day limit.
+
+### Generic RPC Call
+
+```rust
+// Any supported Solana RPC method
+let response = client.rpc("getBalance", serde_json::json!(["So11111111111111111111111111111111111111112"])).await?;
+println!("Balance: {:?}", response.result);
+
+// Get transaction details
+let response = client.rpc("getTransaction", serde_json::json!(["5K8c...", {"encoding": "json"}])).await?;
+```
+
+### Simulate Transaction
+
+```rust
+// Simulate before submitting (does NOT go through Slipstream routing)
+let sim = client.simulate_transaction(&tx_bytes).await?;
+if let Some(err) = sim.error {
+    eprintln!("Simulation failed: {}", err.message);
+} else {
+    println!("Simulation OK — logs: {:?}", sim.logs);
+    // Now submit for real
+    let result = client.submit_transaction(&tx_bytes).await?;
+}
+```
+
+### Simulate Bundle
+
+```rust
+// Simulate all transactions in a bundle before submitting
+let txs = vec![tx1_bytes, tx2_bytes, tx3_bytes];
+let results = client.simulate_bundle(&txs).await?;
+
+// Check each simulation result
+let all_ok = results.iter().all(|r| r.error.is_none());
+if all_ok {
+    let result = client.submit_bundle(&txs).await?;
+    println!("Bundle accepted: {}", result.accepted);
+} else {
+    for (i, r) in results.iter().enumerate() {
+        if let Some(err) = &r.error {
+            eprintln!("TX {} failed: {}", i, err.message);
+        }
+    }
+}
+```
+
+### Supported RPC Methods
+
+**Network**
+
+| Method | Description |
+|--------|-------------|
+| `getHealth` | Node health status |
+
+**Cluster**
+
+| Method | Description |
+|--------|-------------|
+| `getSlot` | Get current slot |
+| `getBlockHeight` | Get current block height |
+| `getEpochInfo` | Get epoch info (epoch, slot index, slots remaining) |
+| `getSlotLeaders` | Get scheduled slot leaders |
+
+**Fees**
+
+| Method | Description |
+|--------|-------------|
+| `getLatestBlockhash` | Get current blockhash |
+| `getFeeForMessage` | Estimate fee for a message |
+| `getRecentPrioritizationFees` | Get recent prioritization fees |
+
+**Accounts**
+
+| Method | Description |
+|--------|-------------|
+| `getAccountInfo` | Get account data |
+| `getMultipleAccounts` | Get multiple accounts in one call |
+| `getBalance` | Get SOL balance for a pubkey |
+| `getMinimumBalanceForRentExemption` | Get minimum rent-exempt balance |
+
+**Tokens**
+
+| Method | Description |
+|--------|-------------|
+| `getTokenAccountBalance` | Get SPL token balance |
+| `getTokenSupply` | Get token mint supply |
+| `getSupply` | Get total SOL supply |
+| `getTokenLargestAccounts` | Get largest token accounts |
+
+**Transactions**
+
+| Method | Description |
+|--------|-------------|
+| `sendTransaction` | Submit a signed transaction |
+| `simulateTransaction` | Simulate a transaction without submitting |
+| `getSignatureStatuses` | Check status of transaction signatures |
+| `getTransaction` | Get transaction details by signature |
+
+**Blocks**
+
+| Method | Description |
+|--------|-------------|
+| `getBlockCommitment` | Get block commitment level |
+| `getFirstAvailableBlock` | Get first available block in ledger |
+
+### SimulationResult Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `error` | `Option<RpcError>` | Simulation error (None if success) |
+| `logs` | `Vec<String>` | Program log messages |
+| `units_consumed` | `u64` | Compute units consumed |
+
+### RpcResponse Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `result` | `serde_json::Value` | RPC method result |
+| `error` | `Option<RpcError>` | JSON-RPC error if failed |
 
 ---
 

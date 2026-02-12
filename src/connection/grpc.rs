@@ -446,15 +446,106 @@ impl Transport for GrpcTransport {
     }
 
     async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>> {
-        // gRPC proto does not yet define SubscribeLatestBlockhash RPC.
-        // Use QUIC or WebSocket transport for this stream.
-        Err(SdkError::connection("latest_blockhash subscription not available via gRPC; use QUIC or WebSocket"))
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        let client = self.client.as_ref().ok_or(SdkError::NotConnected)?;
+        let mut client = client.clone();
+        let config = self.config.as_ref().ok_or(SdkError::NotConnected)?;
+
+        let (tx, rx) = mpsc::channel(32);
+
+        let request = tonic::Request::new(proto::SubscriptionRequest {
+            api_key: config.api_key.clone(),
+            region: config.region.clone().unwrap_or_default(),
+        });
+
+        let response = client
+            .subscribe_latest_blockhash(request)
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to subscribe to latest blockhash: {}", e)))?;
+
+        let mut stream = response.into_inner();
+
+        tokio::spawn(async move {
+            loop {
+                match stream.message().await {
+                    Ok(Some(bh)) => {
+                        let sdk_bh = LatestBlockhash {
+                            blockhash: bh.blockhash,
+                            last_valid_block_height: bh.last_valid_block_height,
+                            timestamp: bh.timestamp,
+                        };
+                        if tx.send(sdk_bh).await.is_err() {
+                            debug!("Receiver dropped, stopping blockhash subscription");
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        debug!("Latest blockhash stream ended");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Error reading latest blockhash");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
     }
 
     async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>> {
-        // gRPC proto does not yet define SubscribeLatestSlot RPC.
-        // Use QUIC or WebSocket transport for this stream.
-        Err(SdkError::connection("latest_slot subscription not available via gRPC; use QUIC or WebSocket"))
+        if !self.is_connected() {
+            return Err(SdkError::NotConnected);
+        }
+
+        let client = self.client.as_ref().ok_or(SdkError::NotConnected)?;
+        let mut client = client.clone();
+        let config = self.config.as_ref().ok_or(SdkError::NotConnected)?;
+
+        let (tx, rx) = mpsc::channel(32);
+
+        let request = tonic::Request::new(proto::SubscriptionRequest {
+            api_key: config.api_key.clone(),
+            region: config.region.clone().unwrap_or_default(),
+        });
+
+        let response = client
+            .subscribe_latest_slot(request)
+            .await
+            .map_err(|e| SdkError::connection(format!("Failed to subscribe to latest slot: {}", e)))?;
+
+        let mut stream = response.into_inner();
+
+        tokio::spawn(async move {
+            loop {
+                match stream.message().await {
+                    Ok(Some(slot)) => {
+                        let sdk_slot = LatestSlot {
+                            slot: slot.slot,
+                            timestamp: slot.timestamp,
+                        };
+                        if tx.send(sdk_slot).await.is_err() {
+                            debug!("Receiver dropped, stopping slot subscription");
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        debug!("Latest slot stream ended");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Error reading latest slot");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
 

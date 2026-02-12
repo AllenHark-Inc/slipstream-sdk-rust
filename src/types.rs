@@ -216,6 +216,33 @@ pub struct TransactionError {
     pub details: Option<serde_json::Value>,
 }
 
+/// Retry policy options for transaction submission
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryOptions {
+    /// Maximum number of retry attempts (default: 2)
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Base backoff delay in milliseconds (default: 100ms, exponential with jitter)
+    #[serde(default = "default_backoff_base_ms")]
+    pub backoff_base_ms: u64,
+    /// Whether to retry with a different sender on failure (default: false)
+    #[serde(default)]
+    pub cross_sender_retry: bool,
+}
+
+fn default_backoff_base_ms() -> u64 { 100 }
+
+impl Default for RetryOptions {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            backoff_base_ms: 100,
+            cross_sender_retry: false,
+        }
+    }
+}
+
 /// Transaction submission options
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +262,9 @@ pub struct SubmitOptions {
     /// Deduplication ID (optional)
     #[serde(default)]
     pub dedup_id: Option<String>,
+    /// Retry policy (overrides max_retries with more control)
+    #[serde(default)]
+    pub retry: Option<RetryOptions>,
 }
 
 impl Default for SubmitOptions {
@@ -245,6 +275,7 @@ impl Default for SubmitOptions {
             max_retries: default_max_retries(),
             timeout_ms: default_timeout_ms(),
             dedup_id: None,
+            retry: None,
         }
     }
 }
@@ -1027,6 +1058,43 @@ pub struct BundleResult {
     pub sender_id: Option<String>,
     /// Error message if failed
     pub error: Option<String>,
+}
+
+/// Raw JSON-RPC 2.0 response from the Solana RPC proxy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcResponse {
+    pub jsonrpc: String,
+    pub id: serde_json::Value,
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<RpcError>,
+}
+
+/// JSON-RPC error object
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcError {
+    pub code: i64,
+    pub message: String,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+/// Result of simulating a transaction via the RPC proxy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationResult {
+    /// Error if simulation failed, None on success
+    #[serde(default)]
+    pub err: Option<serde_json::Value>,
+    /// Program log messages
+    #[serde(default)]
+    pub logs: Vec<String>,
+    /// Compute units consumed
+    #[serde(default, rename = "unitsConsumed")]
+    pub units_consumed: u64,
+    /// Program return data (if any)
+    #[serde(default, rename = "returnData")]
+    pub return_data: Option<serde_json::Value>,
 }
 
 /// Request payload for registering or updating a webhook

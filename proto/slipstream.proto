@@ -20,6 +20,18 @@ service SlipstreamService {
   // Submit a bundle of transactions for atomic execution
   rpc SubmitBundle(BundleRequest) returns (BundleResponse);
 
+  // Subscribe to latest blockhash (emitted every ~2s)
+  rpc SubscribeLatestBlockhash(SubscriptionRequest) returns (stream LatestBlockhash);
+
+  // Subscribe to latest slot (emitted on slot change ~400ms)
+  rpc SubscribeLatestSlot(SubscriptionRequest) returns (stream LatestSlot);
+
+  // Get token balance for the authenticated API key
+  rpc GetBalance(BalanceRequest) returns (BalanceResponse);
+
+  // Get current routing recommendation (best region for current leader)
+  rpc GetRoutingRecommendation(RoutingRecommendationRequest) returns (RoutingRecommendationResponse);
+
   // Get current connection status and rate limits
   rpc GetConnectionStatus(ConnectionStatusRequest) returns (ConnectionStatusResponse);
 }
@@ -226,4 +238,47 @@ message RateLimitInfo {
   uint32 burst_size = 2;
   uint32 remaining = 3;
   uint64 reset_at = 4;
+}
+
+// Latest blockhash stream
+message LatestBlockhash {
+  string blockhash = 1;
+  uint64 last_valid_block_height = 2;
+  uint64 timestamp = 3;
+}
+
+// Latest slot stream
+message LatestSlot {
+  uint64 slot = 1;
+  uint64 timestamp = 2;
+}
+
+// Balance request
+message BalanceRequest {
+  string api_key = 1;
+}
+
+// Balance response
+message BalanceResponse {
+  double balance_sol = 1;
+  int64 balance_tokens = 2;
+  int64 balance_lamports = 3;
+  int64 grace_remaining_tokens = 4;
+}
+
+// Routing recommendation request
+message RoutingRecommendationRequest {
+  string api_key = 1;
+}
+
+// Routing recommendation response
+message RoutingRecommendationResponse {
+  string best_region = 1;
+  string leader_pubkey = 2;
+  uint64 slot = 3;
+  uint32 confidence = 4;
+  uint32 expected_rtt_ms = 5;
+  repeated string fallback_regions = 6;
+  string fallback_strategy = 7;
+  uint64 valid_for_ms = 8;
 }
