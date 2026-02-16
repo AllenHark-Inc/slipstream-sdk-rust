@@ -63,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_retries: 3,                 // More retries for critical tx
         timeout_ms: 60_000,             // Longer timeout
         dedup_id: Some("my-unique-tx-id-12345".to_string()), // Prevent duplicates
+        retry: None,
     };
 
     println!("   Broadcast Mode: {} (fan-out enabled)", broadcast_options.broadcast_mode);
@@ -84,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_retries: 2,
         timeout_ms: 30_000,
         dedup_id: None,
+        retry: None,
     };
 
     println!("   Preferred Sender: {:?}", preferred_options.preferred_sender);

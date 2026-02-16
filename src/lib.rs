@@ -94,8 +94,9 @@ pub use types::{
     PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionLandingRate,
     RegionStatus, RegisterWebhookRequest, RetryOptions, RoutingInfo, RoutingRecommendation,
     RpcError, RpcResponse, SenderLandingRate, SimulationResult, SubmitOptions, TipInstruction,
-    TopUpInfo, TransactionError, TransactionResult, TransactionStatus, UsageEntry,
-    UsageHistoryOptions, WebhookConfig, WebhookEvent, WebhookNotificationLevel, WorkerEndpoint,
+    TopUpInfo, TransactionBuilder, TransactionError, TransactionResult, TransactionStatus,
+    UsageEntry, UsageHistoryOptions, WebhookConfig, WebhookEvent, WebhookNotificationLevel,
+    WorkerEndpoint,
 };
 
 /// SDK version

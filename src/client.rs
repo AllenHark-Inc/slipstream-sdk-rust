@@ -35,11 +35,12 @@ use crate::types::{
     RoutingRecommendation, SimulationResult, SubmitOptions, TipInstruction, TopUpInfo,
     TransactionResult, UsageEntry, UsageHistoryOptions, WebhookConfig,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Tracks ping results for latency and clock synchronization
 struct TimeSyncState {
@@ -84,6 +85,46 @@ impl TimeSyncState {
     }
 }
 
+/// Client-side deduplication cache
+///
+/// Tracks recently submitted transaction signatures to prevent double-submission.
+/// Entries expire after 60 seconds.
+struct DedupCache {
+    entries: std::sync::RwLock<HashMap<Vec<u8>, Instant>>,
+    ttl: std::time::Duration,
+}
+
+impl DedupCache {
+    fn new() -> Self {
+        Self {
+            entries: std::sync::RwLock::new(HashMap::new()),
+            ttl: std::time::Duration::from_secs(60),
+        }
+    }
+
+    /// Check if a transaction was recently submitted. Returns true if duplicate.
+    fn is_duplicate(&self, tx_bytes: &[u8]) -> bool {
+        let entries = self.entries.read().unwrap();
+        if let Some(submitted_at) = entries.get(tx_bytes) {
+            submitted_at.elapsed() < self.ttl
+        } else {
+            false
+        }
+    }
+
+    /// Record a submitted transaction
+    fn record(&self, tx_bytes: &[u8]) {
+        let mut entries = self.entries.write().unwrap();
+        entries.insert(tx_bytes.to_vec(), Instant::now());
+
+        // Cleanup expired entries if cache is getting large
+        if entries.len() > 1000 {
+            let ttl = self.ttl;
+            entries.retain(|_, submitted_at| submitted_at.elapsed() < ttl);
+        }
+    }
+}
+
 /// Slipstream client for transaction submission and streaming
 pub struct SlipstreamClient {
     config: Config,
@@ -99,6 +140,10 @@ pub struct SlipstreamClient {
     time_sync: Arc<TimeSyncState>,
     /// Keep-alive background task handle (Mutex for interior mutability)
     keepalive_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Client-side deduplication cache
+    dedup_cache: Arc<DedupCache>,
+    /// Subscription tracker for auto-resubscribe on reconnect
+    subscription_tracker: Arc<crate::connection::health::SubscriptionTracker>,
 }
 
 /// Internal metrics tracking
@@ -180,8 +225,13 @@ impl SlipstreamClient {
 
         let transport = Arc::new(RwLock::new(transport));
 
-        // Start health monitor to handle auto-reconnection
-        let monitor = crate::connection::health::HealthMonitor::new(config.clone(), transport.clone());
+        // Start health monitor to handle auto-reconnection with subscription tracking
+        let subscription_tracker = Arc::new(crate::connection::health::SubscriptionTracker::new());
+        let monitor = crate::connection::health::HealthMonitor::new(
+            config.clone(),
+            transport.clone(),
+            Arc::clone(&subscription_tracker),
+        );
         monitor.start();
 
         let http_client = reqwest::Client::builder()
@@ -232,6 +282,8 @@ impl SlipstreamClient {
             }),
             time_sync,
             keepalive_handle: tokio::sync::Mutex::new(keepalive_handle),
+            dedup_cache: Arc::new(DedupCache::new()),
+            subscription_tracker,
         };
 
         // Auto-register webhook if configured
@@ -305,6 +357,14 @@ impl SlipstreamClient {
         transaction: &[u8],
         options: &SubmitOptions,
     ) -> Result<TransactionResult> {
+        // Client-side deduplication check
+        if self.dedup_cache.is_duplicate(transaction) {
+            warn!(tx_size = transaction.len(), "Duplicate transaction detected by client-side cache");
+            return Err(SdkError::Transaction(
+                "Duplicate transaction: already submitted within the last 60 seconds".to_string(),
+            ));
+        }
+
         debug!(
             tx_size = transaction.len(),
             broadcast_mode = options.broadcast_mode,
@@ -323,6 +383,7 @@ impl SlipstreamClient {
 
         if result.is_ok() {
             self.metrics.transactions_confirmed.fetch_add(1, Ordering::Relaxed);
+            self.dedup_cache.record(transaction);
         }
 
         result
@@ -338,6 +399,8 @@ impl SlipstreamClient {
     /// A receiver channel that yields leader hints as they arrive
     pub async fn subscribe_leader_hints(&self) -> Result<mpsc::Receiver<LeaderHint>> {
         debug!("Subscribing to leader hints");
+        self.subscription_tracker
+            .track(crate::connection::health::StreamType::LeaderHints);
         let transport = self.transport.read().await;
         transport.subscribe_leader_hints().await
     }
@@ -352,6 +415,8 @@ impl SlipstreamClient {
     /// A receiver channel that yields tip instructions as they arrive
     pub async fn subscribe_tip_instructions(&self) -> Result<mpsc::Receiver<TipInstruction>> {
         debug!("Subscribing to tip instructions");
+        self.subscription_tracker
+            .track(crate::connection::health::StreamType::TipInstructions);
         let transport = self.transport.read().await;
         transport.subscribe_tip_instructions().await
     }
@@ -366,6 +431,8 @@ impl SlipstreamClient {
     /// A receiver channel that yields priority fees as they arrive
     pub async fn subscribe_priority_fees(&self) -> Result<mpsc::Receiver<PriorityFee>> {
         debug!("Subscribing to priority fees");
+        self.subscription_tracker
+            .track(crate::connection::health::StreamType::PriorityFees);
         let transport = self.transport.read().await;
         transport.subscribe_priority_fees().await
     }
@@ -380,6 +447,8 @@ impl SlipstreamClient {
     /// A receiver channel that yields latest blockhash updates as they arrive
     pub async fn subscribe_latest_blockhash(&self) -> Result<mpsc::Receiver<LatestBlockhash>> {
         debug!("Subscribing to latest blockhash");
+        self.subscription_tracker
+            .track(crate::connection::health::StreamType::LatestBlockhash);
         let transport = self.transport.read().await;
         transport.subscribe_latest_blockhash().await
     }
@@ -394,6 +463,8 @@ impl SlipstreamClient {
     /// A receiver channel that yields latest slot updates as they arrive
     pub async fn subscribe_latest_slot(&self) -> Result<mpsc::Receiver<LatestSlot>> {
         debug!("Subscribing to latest slot");
+        self.subscription_tracker
+            .track(crate::connection::health::StreamType::LatestSlot);
         let transport = self.transport.read().await;
         transport.subscribe_latest_slot().await
     }

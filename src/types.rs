@@ -1106,6 +1106,171 @@ pub struct SimulationResult {
     pub return_data: Option<serde_json::Value>,
 }
 
+// =============================================================================
+// Transaction Builder
+// =============================================================================
+
+/// Helper for building Solana transactions with Slipstream-specific fields
+///
+/// TransactionBuilder assists with adding tip transfers and priority fee
+/// instructions to an existing transaction before submission.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use allenhark_slipstream::TransactionBuilder;
+///
+/// let builder = TransactionBuilder::new()
+///     .tip_wallet("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU")
+///     .tip_lamports(50_000)
+///     .compute_unit_price(10_000)
+///     .compute_unit_limit(200_000);
+///
+/// // Get the instructions to add to your transaction
+/// let tip_info = builder.tip_info();
+/// let fee_info = builder.fee_info();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TransactionBuilder {
+    tip_wallet: Option<String>,
+    tip_lamports: u64,
+    compute_unit_price: Option<u64>,
+    compute_unit_limit: Option<u32>,
+    preferred_sender: Option<String>,
+    broadcast_mode: bool,
+    dedup_id: Option<String>,
+    max_retries: u32,
+    timeout_ms: u64,
+}
+
+impl Default for TransactionBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TransactionBuilder {
+    /// Create a new TransactionBuilder
+    pub fn new() -> Self {
+        Self {
+            tip_wallet: None,
+            tip_lamports: 0,
+            compute_unit_price: None,
+            compute_unit_limit: None,
+            preferred_sender: None,
+            broadcast_mode: false,
+            dedup_id: None,
+            max_retries: 2,
+            timeout_ms: 30_000,
+        }
+    }
+
+    /// Set the tip wallet address (base58)
+    pub fn tip_wallet(mut self, wallet: &str) -> Self {
+        self.tip_wallet = Some(wallet.to_string());
+        self
+    }
+
+    /// Set the tip amount in lamports
+    pub fn tip_lamports(mut self, lamports: u64) -> Self {
+        self.tip_lamports = lamports;
+        self
+    }
+
+    /// Set the tip amount in SOL
+    pub fn tip_sol(mut self, sol: f64) -> Self {
+        self.tip_lamports = (sol * 1_000_000_000.0) as u64;
+        self
+    }
+
+    /// Apply tip from a TipInstruction received via streaming
+    pub fn from_tip_instruction(mut self, tip: &TipInstruction) -> Self {
+        self.tip_wallet = Some(tip.tip_wallet_address.clone());
+        self.tip_lamports = (tip.tip_amount_sol * 1_000_000_000.0) as u64;
+        self.preferred_sender = Some(tip.sender.clone());
+        self
+    }
+
+    /// Set the compute unit price in micro-lamports
+    pub fn compute_unit_price(mut self, price: u64) -> Self {
+        self.compute_unit_price = Some(price);
+        self
+    }
+
+    /// Set the compute unit limit
+    pub fn compute_unit_limit(mut self, limit: u32) -> Self {
+        self.compute_unit_limit = Some(limit);
+        self
+    }
+
+    /// Apply priority fee from a PriorityFee received via streaming
+    pub fn from_priority_fee(mut self, fee: &PriorityFee) -> Self {
+        self.compute_unit_price = Some(fee.compute_unit_price);
+        self.compute_unit_limit = Some(fee.compute_unit_limit);
+        self
+    }
+
+    /// Set the preferred sender
+    pub fn preferred_sender(mut self, sender: &str) -> Self {
+        self.preferred_sender = Some(sender.to_string());
+        self
+    }
+
+    /// Enable broadcast mode (fan-out to all regions)
+    pub fn broadcast(mut self, enabled: bool) -> Self {
+        self.broadcast_mode = enabled;
+        self
+    }
+
+    /// Set a deduplication ID
+    pub fn dedup_id(mut self, id: &str) -> Self {
+        self.dedup_id = Some(id.to_string());
+        self
+    }
+
+    /// Set max retries
+    pub fn max_retries(mut self, retries: u32) -> Self {
+        self.max_retries = retries;
+        self
+    }
+
+    /// Set timeout in milliseconds
+    pub fn timeout_ms(mut self, ms: u64) -> Self {
+        self.timeout_ms = ms;
+        self
+    }
+
+    /// Get tip information for building the SOL transfer instruction
+    ///
+    /// Returns `(wallet_address, lamports)` or None if no tip is configured.
+    pub fn tip_info(&self) -> Option<(&str, u64)> {
+        self.tip_wallet.as_deref().map(|w| (w, self.tip_lamports))
+    }
+
+    /// Get priority fee information
+    ///
+    /// Returns `(compute_unit_price, compute_unit_limit)` or None if not configured.
+    pub fn fee_info(&self) -> Option<(u64, u32)> {
+        match (self.compute_unit_price, self.compute_unit_limit) {
+            (Some(price), Some(limit)) => Some((price, limit)),
+            (Some(price), None) => Some((price, 200_000)),
+            _ => None,
+        }
+    }
+
+    /// Build SubmitOptions from the builder configuration
+    pub fn build_options(&self) -> SubmitOptions {
+        SubmitOptions {
+            broadcast_mode: self.broadcast_mode,
+            preferred_sender: self.preferred_sender.clone(),
+            max_retries: self.max_retries,
+            timeout_ms: self.timeout_ms,
+            dedup_id: self.dedup_id.clone(),
+            retry: None,
+        }
+    }
+}
+
 /// Request payload for registering or updating a webhook
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterWebhookRequest {
