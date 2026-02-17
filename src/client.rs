@@ -31,7 +31,7 @@ use crate::error::{Result, SdkError};
 use crate::types::{
     Balance, BundleResult, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
     LandingRateOptions, LandingRateStats, LatestBlockhash, LatestSlot, LeaderHint,
-    PerformanceMetrics, PingResult, PriorityFee, RegisterWebhookRequest, RpcResponse,
+    PerformanceMetrics, PingResult, PriorityFee, RegionInfo, RegisterWebhookRequest, RpcResponse,
     RoutingRecommendation, SimulationResult, SubmitOptions, TipInstruction, TopUpInfo,
     TransactionResult, UsageEntry, UsageHistoryOptions, WebhookConfig,
 };
@@ -570,6 +570,43 @@ impl SlipstreamClient {
             fallback_strategy: FallbackStrategy::Retry,
             valid_for_ms: 1000,
         }
+    }
+
+    // ========================================================================
+    // Config Methods
+    // ========================================================================
+
+    /// Get all configured regions.
+    ///
+    /// Returns a list of regions with their IDs, display names, endpoints,
+    /// and geolocation coordinates. This endpoint does not require authentication.
+    pub async fn get_regions(&self) -> Result<Vec<RegionInfo>> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/config/regions", base_url);
+        debug!(url = %url, "Fetching configured regions");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!("Failed to fetch regions: {}", error_text)));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let regions = body["regions"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| serde_json::from_value::<RegionInfo>(r.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(regions)
     }
 
     // ========================================================================

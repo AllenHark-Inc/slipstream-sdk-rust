@@ -685,6 +685,26 @@ impl Default for MultiRegionConfig {
     }
 }
 
+/// Region information from the config endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegionInfo {
+    /// Region identifier (e.g., "us-east")
+    pub region_id: String,
+    /// Human-readable display name
+    pub display_name: String,
+    /// Region endpoint URL
+    pub endpoint: String,
+    /// Geographic coordinates
+    pub geolocation: Option<Geolocation>,
+}
+
+/// Geographic coordinates for a region
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Geolocation {
+    pub lat: f64,
+    pub lon: f64,
+}
+
 /// Region status for multi-region routing decisions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

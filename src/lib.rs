@@ -89,10 +89,11 @@ pub use error::{Result, SdkError};
 pub use multi_region::MultiRegionClient;
 pub use types::{
     AlternativeSender, Balance, BundleResult, ConnectionInfo, ConnectionState, ConnectionStatus,
-    FallbackStrategy, FreeTierUsage, LandingRateOptions, LandingRatePeriod, LandingRateStats,
-    LatestBlockhash, LatestSlot, LeaderHint, LeaderHintMetadata, MultiRegionConfig,
-    PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo, RegionLandingRate,
-    RegionStatus, RegisterWebhookRequest, RetryOptions, RoutingInfo, RoutingRecommendation,
+    FallbackStrategy, FreeTierUsage, Geolocation, LandingRateOptions, LandingRatePeriod,
+    LandingRateStats, LatestBlockhash, LatestSlot, LeaderHint, LeaderHintMetadata,
+    MultiRegionConfig, PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo,
+    RegionInfo, RegionLandingRate, RegionStatus, RegisterWebhookRequest, RetryOptions,
+    RoutingInfo, RoutingRecommendation,
     RpcError, RpcResponse, SenderLandingRate, SimulationResult, SubmitOptions, TipInstruction,
     TopUpInfo, TransactionBuilder, TransactionError, TransactionResult, TransactionStatus,
     UsageEntry, UsageHistoryOptions, WebhookConfig, WebhookEvent, WebhookNotificationLevel,
