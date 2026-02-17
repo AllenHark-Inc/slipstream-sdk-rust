@@ -28,7 +28,7 @@ pub struct Config {
     /// Custom endpoint URL (optional, auto-discover if not set)
     pub endpoint: Option<String>,
 
-    /// Discovery service URL (defaults to https://discovery.slipstream.allenhark.com)
+    /// Discovery service URL (defaults to https://discovery.allenhark.network)
     pub discovery_url: String,
 
     /// Connection timeout
@@ -203,7 +203,7 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set a custom discovery URL (default: https://discovery.slipstream.allenhark.com)
+    /// Set a custom discovery URL (default: https://discovery.allenhark.network)
     pub fn discovery_url(mut self, url: impl Into<String>) -> Self {
         self.discovery_url = Some(url.into());
         self

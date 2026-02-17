@@ -854,12 +854,12 @@ mod tests {
             "ws://localhost:9000/ws"
         );
         assert_eq!(
-            WebSocketTransport::parse_endpoint("wss://api.slipstream.allenhark.com/ws"),
-            "wss://api.slipstream.allenhark.com/ws"
+            WebSocketTransport::parse_endpoint("wss://slipstream.allenhark.network/ws"),
+            "wss://slipstream.allenhark.network/ws"
         );
         assert_eq!(
-            WebSocketTransport::parse_endpoint("https://api.slipstream.allenhark.com/ws"),
-            "wss://api.slipstream.allenhark.com/ws"
+            WebSocketTransport::parse_endpoint("https://slipstream.allenhark.network/ws"),
+            "wss://slipstream.allenhark.network/ws"
         );
         assert_eq!(
             WebSocketTransport::parse_endpoint("localhost:9000/ws"),

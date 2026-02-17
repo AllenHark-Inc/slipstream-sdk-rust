@@ -575,8 +575,8 @@ mod tests {
             "http://localhost:10000"
         );
         assert_eq!(
-            GrpcTransport::parse_endpoint("https://api.slipstream.allenhark.com:10000"),
-            "https://api.slipstream.allenhark.com:10000"
+            GrpcTransport::parse_endpoint("https://slipstream.allenhark.network:10000"),
+            "https://slipstream.allenhark.network:10000"
         );
     }
 

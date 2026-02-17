@@ -479,22 +479,22 @@ mod tests {
 
     #[test]
     fn test_worker_endpoint_new() {
-        let worker = WorkerEndpoint::new("w1", "us-east", "worker1.slipstream.allenhark.com");
+        let worker = WorkerEndpoint::new("w1", "us-east", "203.0.113.10");
         assert_eq!(worker.id, "w1");
         assert_eq!(worker.region, "us-east");
-        assert_eq!(worker.quic, Some("worker1.slipstream.allenhark.com:4433".to_string()));
-        assert_eq!(worker.grpc, Some("http://worker1.slipstream.allenhark.com:10000".to_string()));
-        assert_eq!(worker.websocket, Some("wss://worker1.slipstream.allenhark.com/ws".to_string()));
-        assert_eq!(worker.http, Some("https://worker1.slipstream.allenhark.com".to_string()));
+        assert_eq!(worker.quic, Some("203.0.113.10:4433".to_string()));
+        assert_eq!(worker.grpc, Some("http://203.0.113.10:10000".to_string()));
+        assert_eq!(worker.websocket, Some("ws://203.0.113.10:9000/ws".to_string()));
+        assert_eq!(worker.http, Some("http://203.0.113.10:9000".to_string()));
     }
 
     #[test]
     fn test_worker_endpoint_get_endpoint() {
-        let worker = WorkerEndpoint::new("w1", "us-east", "worker1.slipstream.allenhark.com");
-        assert_eq!(worker.get_endpoint(Protocol::Quic), Some("worker1.slipstream.allenhark.com:4433"));
-        assert_eq!(worker.get_endpoint(Protocol::Grpc), Some("http://worker1.slipstream.allenhark.com:10000"));
-        assert_eq!(worker.get_endpoint(Protocol::WebSocket), Some("wss://worker1.slipstream.allenhark.com/ws"));
-        assert_eq!(worker.get_endpoint(Protocol::Http), Some("https://worker1.slipstream.allenhark.com"));
+        let worker = WorkerEndpoint::new("w1", "us-east", "203.0.113.10");
+        assert_eq!(worker.get_endpoint(Protocol::Quic), Some("203.0.113.10:4433"));
+        assert_eq!(worker.get_endpoint(Protocol::Grpc), Some("http://203.0.113.10:10000"));
+        assert_eq!(worker.get_endpoint(Protocol::WebSocket), Some("ws://203.0.113.10:9000/ws"));
+        assert_eq!(worker.get_endpoint(Protocol::Http), Some("http://203.0.113.10:9000"));
     }
 
     #[test]

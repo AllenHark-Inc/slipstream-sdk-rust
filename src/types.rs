@@ -358,13 +358,13 @@ pub struct WorkerEndpoint {
     pub id: String,
     /// Region identifier (e.g., "us-east", "eu-central")
     pub region: String,
-    /// QUIC endpoint (e.g., "quic://worker1.us-east.slipstream.allenhark.com:4433")
+    /// QUIC endpoint (e.g., "203.0.113.10:4433")
     pub quic: Option<String>,
-    /// gRPC endpoint (e.g., "http://worker1.us-east.slipstream.allenhark.com:10000")
+    /// gRPC endpoint (e.g., "http://203.0.113.10:10000")
     pub grpc: Option<String>,
-    /// WebSocket endpoint (e.g., "wss://worker1.us-east.slipstream.allenhark.com/ws")
+    /// WebSocket endpoint (e.g., "ws://203.0.113.10:9000/ws")
     pub websocket: Option<String>,
-    /// HTTP endpoint (e.g., "https://worker1.us-east.slipstream.allenhark.com")
+    /// HTTP endpoint (e.g., "http://203.0.113.10:9000")
     pub http: Option<String>,
 }
 

@@ -15,9 +15,9 @@
 //!         .build()?;
 //!
 //!     let workers = vec![
-//!         WorkerEndpoint::new("w1", "us-west", "worker1.slipstream.io"),
-//!         WorkerEndpoint::new("w2", "eu-central", "worker2.slipstream.io"),
-//!         WorkerEndpoint::new("w3", "asia-east", "worker3.slipstream.io"),
+//!         WorkerEndpoint::new("w1", "us-west", "203.0.113.10"),
+//!         WorkerEndpoint::new("w2", "eu-central", "203.0.113.20"),
+//!         WorkerEndpoint::new("w3", "asia-east", "203.0.113.30"),
 //!     ];
 //!
 //!     let multi_config = MultiRegionConfig::default();

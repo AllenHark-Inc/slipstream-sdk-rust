@@ -82,7 +82,7 @@ let config = Config::builder()
 | `api_key(key)` | `&str` | **required** | API key (must start with `sk_`) |
 | `region(region)` | `&str` | auto | Preferred region (e.g., `"us-east"`, `"eu-central"`) |
 | `endpoint(url)` | `&str` | auto | Override discovery with explicit worker endpoint |
-| `discovery_url(url)` | `&str` | `https://discovery.slipstream.allenhark.com` | Custom discovery service URL |
+| `discovery_url(url)` | `&str` | `https://discovery.allenhark.network` | Custom discovery service URL |
 | `tier(tier)` | `&str` | `"pro"` | Billing tier: `"free"`, `"standard"`, `"pro"`, `"enterprise"` |
 | `connection_timeout(dur)` | `Duration` | 10s | Connection timeout |
 | `max_retries(n)` | `u32` | `3` | Maximum retry attempts for failed requests |

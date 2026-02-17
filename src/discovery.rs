@@ -9,7 +9,7 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 /// Default discovery URL
-pub const DEFAULT_DISCOVERY_URL: &str = "https://discovery.slipstream.allenhark.com";
+pub const DEFAULT_DISCOVERY_URL: &str = "https://discovery.allenhark.network";
 
 /// Discovery API response
 #[derive(Debug, Clone, Deserialize)]
