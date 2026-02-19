@@ -43,8 +43,12 @@ pub struct DiscoveryWorker {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkerPorts {
     pub quic: u16,
-    pub ws: u16,
-    pub http: u16,
+    #[serde(default = "default_grpc_port")]
+    pub grpc: u16,
+}
+
+fn default_grpc_port() -> u16 {
+    10000
 }
 
 /// Client for the discovery service
@@ -146,30 +150,19 @@ impl DiscoveryClient {
         workers
             .iter()
             .filter(|w| w.healthy)
-            .map(|w| {
-                WorkerEndpoint::with_ports(
-                    &w.id,
-                    &w.region,
-                    &w.ip,
-                    w.ports.quic,
-                    10000, // gRPC port (standard)
-                    w.ports.ws,
-                    w.ports.http,
-                )
-            })
+            .map(|w| Self::worker_to_endpoint(w))
             .collect()
     }
 
     /// Convert a single discovery worker to a WorkerEndpoint
     pub fn worker_to_endpoint(worker: &DiscoveryWorker) -> WorkerEndpoint {
-        WorkerEndpoint::with_ports(
+        WorkerEndpoint::with_endpoints(
             &worker.id,
             &worker.region,
-            &worker.ip,
-            worker.ports.quic,
-            10000,
-            worker.ports.ws,
-            worker.ports.http,
+            Some(format!("{}:{}", worker.ip, worker.ports.quic)),
+            Some(format!("http://{}:{}", worker.ip, worker.ports.grpc)),
+            None, // Worker has no WebSocket listener
+            None, // Worker has no HTTP listener
         )
     }
 }

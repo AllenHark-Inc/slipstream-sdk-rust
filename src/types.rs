@@ -370,15 +370,15 @@ pub struct WorkerEndpoint {
 
 impl WorkerEndpoint {
     /// Create a new worker endpoint with all protocols at the same IP/host
-    /// Uses standard ports: QUIC=4433, gRPC=10000, WebSocket=9000, HTTP=9000
+    /// Uses standard ports: QUIC=4433, gRPC=10000
     pub fn new(id: &str, region: &str, ip: &str) -> Self {
         Self {
             id: id.to_string(),
             region: region.to_string(),
             quic: Some(format!("{}:4433", ip)),
             grpc: Some(format!("http://{}:10000", ip)),
-            websocket: Some(format!("ws://{}:9000/ws", ip)),
-            http: Some(format!("http://{}:9000", ip)),
+            websocket: None,
+            http: None,
         }
     }
 
