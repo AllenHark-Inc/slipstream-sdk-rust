@@ -153,25 +153,21 @@ impl QuicTransport {
             .await
             .map_err(|e| SdkError::connection(format!("Failed to open auth stream: {}", e)))?;
 
-        // Build auth frame: 8-byte key prefix + optional version string
-        let key_prefix = if api_key.starts_with("sk_") {
-            &api_key[3..11.min(api_key.len())]
-        } else {
-            &api_key[..8.min(api_key.len())]
-        };
+        // Build auth frame: 16-byte key prefix + optional version string
+        // Key prefix is first 16 chars of the API key (e.g. "sk_live_MPn7cQvz")
+        let key_prefix = &api_key[..16.min(api_key.len())];
 
-        // Pad to 8 bytes if needed
         let mut auth_frame = [0u8; 64];
         let prefix_bytes = key_prefix.as_bytes();
-        let prefix_len = prefix_bytes.len().min(8);
+        let prefix_len = prefix_bytes.len().min(16);
         auth_frame[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
 
-        // Add client version string after key prefix
+        // Add client version string after 16-byte key prefix
         let version = b"rust-sdk-v0.1";
-        auth_frame[8..8 + version.len()].copy_from_slice(version);
+        auth_frame[16..16 + version.len()].copy_from_slice(version);
 
         // Send auth frame
-        send.write_all(&auth_frame[..8 + version.len()])
+        send.write_all(&auth_frame[..16 + version.len()])
             .await
             .map_err(|e| SdkError::connection(format!("Failed to send auth: {}", e)))?;
 
