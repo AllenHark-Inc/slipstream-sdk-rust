@@ -117,9 +117,16 @@ impl FallbackChain {
             return self.try_protocol(config, preferred).await;
         }
 
-        // Try protocols in fallback order
+        // Try protocols in fallback order, skipping those without configured endpoints
         let mut last_error = None;
         for protocol in Protocol::fallback_order() {
+            // Skip protocols that have no endpoint configured on the selected worker
+            if let Some(ref worker) = config.selected_worker {
+                if worker.get_endpoint(*protocol).is_none() {
+                    debug!(protocol = ?protocol, "No endpoint configured, skipping");
+                    continue;
+                }
+            }
             match self.try_protocol(config, *protocol).await {
                 Ok(transport) => {
                     info!(protocol = ?protocol, "Connected successfully");
