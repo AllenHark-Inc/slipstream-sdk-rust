@@ -88,10 +88,11 @@ impl QuicTransport {
     fn build_client_config() -> Result<ClientConfig> {
         // Create rustls config that accepts any certificate (for development)
         // In production, you'd want proper certificate validation
-        let crypto = rustls::ClientConfig::builder()
+        let mut crypto = rustls::ClientConfig::builder()
             .with_safe_defaults()
             .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
             .with_no_client_auth();
+        crypto.alpn_protocols = vec![b"slipstream".to_vec()];
 
         let mut client_config = ClientConfig::new(Arc::new(crypto));
 
