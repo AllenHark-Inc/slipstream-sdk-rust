@@ -42,7 +42,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let balance = client.get_balance().await?;
     println!("   Balance:     {:.6} SOL ({} tokens)", balance.balance_sol, balance.balance_tokens);
     println!("   Lamports:    {}", balance.balance_lamports);
-    println!("   Grace left:  {} tokens\n", balance.grace_remaining_tokens);
+    println!("   Grace left:  {} tokens", balance.grace_remaining_tokens);
+    if let Some(ref tier) = balance.tier {
+        println!("   Tier:        {}", tier);
+    }
+    if let Some(ref usage) = balance.free_tier_usage {
+        println!("   Free usage:  {}/{} requests today ({} remaining)",
+            usage.used, usage.limit, usage.remaining);
+    }
+    println!();
 
     // =========================================================================
     // 2. Get Deposit Address

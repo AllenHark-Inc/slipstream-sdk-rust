@@ -643,11 +643,16 @@ impl SlipstreamClient {
         let cost_per_query = 50_000i64; // 50,000 lamports per query
         let grace_limit = 1_000_000i64; // 1M lamports grace
 
+        let tier = body["tier"].as_str().map(|s| s.to_string());
+        let free_tier_usage = serde_json::from_value(body["free_tier_usage"].clone()).ok();
+
         Ok(Balance {
             balance_sol: balance_lamports as f64 / 1_000_000_000.0,
             balance_tokens: balance_lamports / cost_per_query,
             balance_lamports,
             grace_remaining_tokens: (balance_lamports + grace_limit) / cost_per_query,
+            tier,
+            free_tier_usage,
         })
     }
 

@@ -739,6 +739,12 @@ pub struct Balance {
     pub balance_lamports: i64,
     /// Grace period remaining in tokens (negative = in grace period)
     pub grace_remaining_tokens: i64,
+    /// Billing tier (free, standard, pro, enterprise)
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// Free tier usage stats (only present for free-tier keys)
+    #[serde(default)]
+    pub free_tier_usage: Option<FreeTierUsage>,
 }
 
 /// Deposit address for topping up token balance
