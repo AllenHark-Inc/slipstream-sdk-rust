@@ -526,6 +526,8 @@ impl Transport for QuicTransport {
             // - N bytes: region_id
             // - 2 bytes: confidence (u16, scaled 0-10000)
             // - 4 bytes: slots_remaining (u32 BE)
+            // - 1 byte: leader_pubkey length
+            // - N bytes: leader_pubkey
             // - 8 bytes: timestamp (u64 BE)
 
             if data.len() < 2 || data[0] != StreamType::LeaderHints as u8 {
@@ -533,10 +535,11 @@ impl Transport for QuicTransport {
             }
 
             let mut offset = 1;
+            if offset >= data.len() { return None; }
             let region_len = data[offset] as usize;
             offset += 1;
 
-            if data.len() < offset + region_len + 14 {
+            if data.len() < offset + region_len + 7 { // min: region + conf(2) + slots(4) + pubkey_len(1)
                 return None;
             }
 
@@ -556,6 +559,20 @@ impl Transport for QuicTransport {
             ]);
             offset += 4;
 
+            // Leader pubkey (length-prefixed)
+            if offset >= data.len() { return None; }
+            let pubkey_len = data[offset] as usize;
+            offset += 1;
+            let leader_pubkey = if pubkey_len > 0 && offset + pubkey_len <= data.len() {
+                let pk = String::from_utf8_lossy(&data[offset..offset + pubkey_len]).to_string();
+                offset += pubkey_len;
+                pk
+            } else {
+                offset += pubkey_len.min(data.len().saturating_sub(offset));
+                String::new()
+            };
+
+            if data.len() < offset + 8 { return None; }
             let timestamp = u64::from_be_bytes([
                 data[offset],
                 data[offset + 1],
@@ -577,7 +594,7 @@ impl Transport for QuicTransport {
                 preferred_region,
                 backup_regions: vec![],
                 confidence,
-                leader_pubkey: String::new(),
+                leader_pubkey,
                 metadata: crate::types::LeaderHintMetadata {
                     tpu_rtt_ms: 0,
                     region_score: confidence as f64 / 100.0,
