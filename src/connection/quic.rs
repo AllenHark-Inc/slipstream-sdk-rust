@@ -229,10 +229,15 @@ impl QuicTransport {
             .await
             .map_err(|e| SdkError::connection(format!("Failed to send subscription request: {}", e)))?;
 
-        // Close our send side
-        send.finish()
-            .await
-            .map_err(|e| SdkError::connection(format!("Failed to finish stream: {}", e)))?;
+        // Close our send side. The server may send STOP_SENDING after reading
+        // the subscription byte, which is harmless — just means it's done receiving.
+        if let Err(e) = send.finish().await {
+            debug!(
+                stream_type = ?stream_type,
+                error = %e,
+                "Stream finish returned error (harmless — server acknowledged subscription)"
+            );
+        }
 
         debug!(
             stream_type = ?stream_type,
