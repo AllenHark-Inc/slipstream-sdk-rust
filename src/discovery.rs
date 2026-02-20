@@ -45,6 +45,9 @@ pub struct WorkerPorts {
     pub quic: u16,
     #[serde(default = "default_grpc_port")]
     pub grpc: u16,
+    /// HTTP management port for billing proxy (e.g., 9091)
+    #[serde(default)]
+    pub http: Option<u16>,
 }
 
 fn default_grpc_port() -> u16 {
@@ -156,13 +159,16 @@ impl DiscoveryClient {
 
     /// Convert a single discovery worker to a WorkerEndpoint
     pub fn worker_to_endpoint(worker: &DiscoveryWorker) -> WorkerEndpoint {
+        let http_endpoint = worker.ports.http
+            .map(|port| format!("http://{}:{}", worker.ip, port));
+
         WorkerEndpoint::with_endpoints(
             &worker.id,
             &worker.region,
             Some(format!("{}:{}", worker.ip, worker.ports.quic)),
             Some(format!("http://{}:{}", worker.ip, worker.ports.grpc)),
             None, // Worker has no WebSocket listener
-            None, // Worker has no HTTP listener
+            http_endpoint,
         )
     }
 }

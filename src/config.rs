@@ -145,18 +145,12 @@ impl Config {
             return endpoint.clone();
         }
 
-        // 3. For HTTP, use the discovery URL (control plane) since workers
-        //    only expose QUIC+gRPC. Billing/balance APIs live on the control plane.
-        if protocol == Protocol::Http {
-            return self.discovery_url.clone();
-        }
-
-        // 4. Default endpoints based on protocol (local development)
+        // 3. Default endpoints based on protocol (local development)
         match protocol {
             Protocol::Quic => "quic://localhost:4433".to_string(),
             Protocol::Grpc => "http://localhost:10000".to_string(),
             Protocol::WebSocket => "ws://localhost:9000/ws".to_string(),
-            Protocol::Http => unreachable!(), // handled above
+            Protocol::Http => "http://localhost:9091".to_string(),
         }
     }
 }
