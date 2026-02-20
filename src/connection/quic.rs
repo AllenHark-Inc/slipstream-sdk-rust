@@ -352,6 +352,20 @@ impl Default for QuicTransport {
 #[async_trait]
 impl Transport for QuicTransport {
     async fn connect(&mut self, config: &Config) -> Result<ConnectionInfo> {
+        // If already connected, return existing connection info instead of creating a second connection
+        if self.is_connected() {
+            let session_id = self.session_id.read().await.clone().unwrap_or_default();
+            debug!(session_id = %session_id, "QUIC already connected, reusing existing connection");
+            return Ok(ConnectionInfo {
+                session_id,
+                protocol: "quic".to_string(),
+                region: None,
+                server_time: 0,
+                features: vec![],
+                rate_limit: crate::types::RateLimitInfo { rps: 0, burst: 0 },
+            });
+        }
+
         let endpoint_url = config.get_endpoint(Protocol::Quic);
         self.config = Some(config.clone());
 
