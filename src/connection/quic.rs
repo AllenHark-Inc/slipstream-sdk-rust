@@ -195,7 +195,10 @@ impl QuicTransport {
         }
     }
 
-    /// Subscribe to a stream type
+    /// Subscribe to a stream type.
+    ///
+    /// Sends a subscription request via a uni-stream, then accepts the server's
+    /// response uni-stream and reads length-prefixed messages from it in a loop.
     async fn subscribe_stream<T, F>(
         &self,
         stream_type: StreamType,
@@ -231,40 +234,107 @@ impl QuicTransport {
             .await
             .map_err(|e| SdkError::connection(format!("Failed to finish stream: {}", e)))?;
 
-        // Spawn task to receive data on incoming uni-streams
+        debug!(
+            stream_type = ?stream_type,
+            "Subscription request sent, waiting for server stream"
+        );
+
+        // Accept the server's response uni-stream for this subscription.
+        // The server opens one persistent uni-stream per subscription type.
         let conn = connection.clone();
         tokio::spawn(async move {
+            // Accept the server's response stream
+            let mut recv = match conn.accept_uni().await {
+                Ok(r) => {
+                    debug!(
+                        stream_type = ?stream_type,
+                        "Accepted server subscription stream"
+                    );
+                    r
+                }
+                Err(quinn::ConnectionError::ApplicationClosed(_)) => {
+                    debug!("Connection closed before subscription stream accepted");
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        stream_type = ?stream_type,
+                        error = %e,
+                        "Failed to accept subscription stream from server"
+                    );
+                    return;
+                }
+            };
+
+            // Read length-prefixed messages from the persistent stream.
+            // Wire format: [2-byte big-endian length] [message bytes]
+            let mut msg_count: u64 = 0;
             loop {
-                match conn.accept_uni().await {
-                    Ok(mut recv) => {
-                        let mut buf = vec![0u8; 256];
-                        match recv.read(&mut buf).await {
-                            Ok(Some(n)) if n > 0 => {
-                                // Check stream type matches
-                                if buf[0] == stream_type as u8 {
-                                    if let Some(data) = decoder(&buf[..n]) {
-                                        if tx.send(data).await.is_err() {
-                                            debug!("Receiver dropped, stopping subscription");
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            Ok(_) => continue,
-                            Err(e) => {
-                                warn!(error = %e, "Error reading subscription data");
-                                break;
-                            }
-                        }
-                    }
-                    Err(quinn::ConnectionError::ApplicationClosed(_)) => {
-                        debug!("Connection closed, stopping subscription");
-                        break;
-                    }
+                // Read 2-byte length prefix
+                let mut len_buf = [0u8; 2];
+                match recv.read_exact(&mut len_buf).await {
+                    Ok(()) => {}
                     Err(e) => {
-                        warn!(error = %e, "Error accepting subscription stream");
+                        // ReadExactError means stream ended or connection closed
+                        if msg_count == 0 {
+                            warn!(
+                                stream_type = ?stream_type,
+                                error = %e,
+                                "Subscription stream closed before any data received"
+                            );
+                        } else {
+                            debug!(
+                                stream_type = ?stream_type,
+                                messages_received = msg_count,
+                                "Subscription stream ended"
+                            );
+                        }
                         break;
                     }
+                }
+
+                let msg_len = u16::from_be_bytes(len_buf) as usize;
+                if msg_len == 0 || msg_len > 4096 {
+                    warn!(
+                        stream_type = ?stream_type,
+                        msg_len = msg_len,
+                        "Invalid message length, closing subscription"
+                    );
+                    break;
+                }
+
+                // Read the message body
+                let mut msg_buf = vec![0u8; msg_len];
+                match recv.read_exact(&mut msg_buf).await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        warn!(
+                            stream_type = ?stream_type,
+                            error = %e,
+                            "Failed to read message body"
+                        );
+                        break;
+                    }
+                }
+
+                msg_count += 1;
+
+                // Decode and send to channel
+                if let Some(data) = decoder(&msg_buf) {
+                    if tx.send(data).await.is_err() {
+                        debug!(
+                            stream_type = ?stream_type,
+                            "Receiver dropped, stopping subscription"
+                        );
+                        break;
+                    }
+                } else if msg_count <= 3 {
+                    debug!(
+                        stream_type = ?stream_type,
+                        msg_len = msg_len,
+                        first_byte = msg_buf.first().copied().unwrap_or(0),
+                        "Failed to decode subscription message"
+                    );
                 }
             }
         });
