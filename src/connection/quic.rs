@@ -711,6 +711,8 @@ impl Transport for QuicTransport {
             // - 1 byte: tier length
             // - N bytes: tier
             // - 4 bytes: expected_latency_ms (u32 BE)
+            // - 4 bytes: confidence (u32 BE)
+            // - 8 bytes: valid_until_slot (u64 BE)
             // - 8 bytes: timestamp (u64 BE)
 
             if data.len() < 2 || data[0] != StreamType::TipInstructions as u8 {
@@ -781,6 +783,34 @@ impl Transport for QuicTransport {
             ]);
             offset += 4;
 
+            // Confidence (0-100)
+            if data.len() < offset + 4 {
+                return None;
+            }
+            let confidence = u32::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
+            offset += 4;
+
+            // Valid until slot
+            if data.len() < offset + 8 {
+                return None;
+            }
+            let valid_until_slot = u64::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]);
+            offset += 8;
+
             // Timestamp
             if data.len() < offset + 8 {
                 return None;
@@ -796,9 +826,6 @@ impl Transport for QuicTransport {
                 data[offset + 7],
             ]);
 
-            // Estimate valid_until_slot (approx 400ms per slot, valid for ~10 slots)
-            let valid_until_slot = timestamp / 400 + 10;
-
             Some(TipInstruction {
                 timestamp,
                 sender: sender.clone(),
@@ -807,7 +834,7 @@ impl Transport for QuicTransport {
                 tip_amount_sol,
                 tip_tier,
                 expected_latency_ms,
-                confidence: 90, // Default confidence
+                confidence,
                 valid_until_slot,
                 alternative_senders: vec![],
             })
