@@ -45,6 +45,9 @@ pub struct WorkerPorts {
     pub quic: u16,
     #[serde(default = "default_grpc_port")]
     pub grpc: u16,
+    /// WebSocket port for streaming subscriptions
+    #[serde(default)]
+    pub ws: Option<u16>,
     /// HTTP management port for billing proxy (e.g., 9091)
     #[serde(default)]
     pub http: Option<u16>,
