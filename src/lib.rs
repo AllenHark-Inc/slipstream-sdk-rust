@@ -94,7 +94,7 @@ pub use types::{
     MultiRegionConfig, PerformanceMetrics, PriorityFee, PriorityFeeSpeed, RateLimitInfo,
     RegionInfo, RegionLandingRate, RegionStatus, RegisterWebhookRequest, RetryOptions,
     RoutingInfo, RoutingRecommendation,
-    RpcError, RpcResponse, SenderLandingRate, SimulationResult, SubmitOptions, TipInstruction,
+    RpcError, RpcResponse, SenderInfo, SenderLandingRate, SimulationResult, SubmitOptions, TipInstruction, TipTier,
     TopUpInfo, TransactionBuilder, TransactionError, TransactionResult, TransactionStatus,
     UsageEntry, UsageHistoryOptions, WebhookConfig, WebhookEvent, WebhookNotificationLevel,
     WorkerEndpoint,

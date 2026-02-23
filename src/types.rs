@@ -705,6 +705,30 @@ pub struct Geolocation {
     pub lon: f64,
 }
 
+/// Sender information from the config endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SenderInfo {
+    /// Sender identifier (e.g., "nozomi", "0slot")
+    pub sender_id: String,
+    /// Human-readable display name
+    pub display_name: String,
+    /// Solana wallet addresses for tips
+    pub tip_wallets: Vec<String>,
+    /// Pricing tiers with speed/cost tradeoffs
+    pub tip_tiers: Vec<TipTier>,
+}
+
+/// Tip pricing tier for a sender
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TipTier {
+    /// Tier name (e.g., "standard", "fast", "ultra_fast")
+    pub name: String,
+    /// Tip amount in SOL
+    pub amount_sol: f64,
+    /// Expected submission latency in milliseconds
+    pub expected_latency_ms: u32,
+}
+
 /// Region status for multi-region routing decisions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -31,7 +31,7 @@ use crate::error::{Result, SdkError};
 use crate::types::{
     Balance, BundleResult, ConnectionInfo, ConnectionState, ConnectionStatus, FallbackStrategy,
     LandingRateOptions, LandingRateStats, LatestBlockhash, LatestSlot, LeaderHint,
-    PerformanceMetrics, PingResult, PriorityFee, RegionInfo, RegisterWebhookRequest, RpcResponse,
+    PerformanceMetrics, PingResult, PriorityFee, RegionInfo, RegisterWebhookRequest, RpcResponse, SenderInfo,
     RoutingRecommendation, SimulationResult, SubmitOptions, TipInstruction, TopUpInfo,
     TransactionResult, UsageEntry, UsageHistoryOptions, WebhookConfig,
 };
@@ -607,6 +607,45 @@ impl SlipstreamClient {
             .unwrap_or_default();
 
         Ok(regions)
+    }
+
+    /// Get all configured senders with their tip wallets and pricing tiers.
+    ///
+    /// Essential for building transactions in both broadcast and streaming modes.
+    /// Returns sender IDs, display names, tip wallet addresses, and tip tiers
+    /// with pricing and expected latency.
+    pub async fn get_senders(&self) -> Result<Vec<SenderInfo>> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/config/senders", base_url);
+        debug!(url = %url, "Fetching configured senders");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!("Failed to fetch senders: {}", error_text)));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let senders = body["senders"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| serde_json::from_value::<SenderInfo>(s.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(senders)
     }
 
     // ========================================================================

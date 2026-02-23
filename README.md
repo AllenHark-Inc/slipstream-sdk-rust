@@ -316,6 +316,44 @@ let result = client.submit_transaction_with_options(&tx_bytes, &SubmitOptions {
 
 ---
 
+## Sender Discovery
+
+Fetch the list of configured senders with their tip wallets and pricing tiers.
+This is essential for building transactions in both broadcast and streaming modes.
+
+### Get Available Senders
+
+```rust
+let senders = client.get_senders().await?;
+
+for sender in &senders {
+    println!("{} ({})", sender.display_name, sender.sender_id);
+    println!("  Tip wallets: {:?}", sender.tip_wallets);
+    for tier in &sender.tip_tiers {
+        println!("  {}: {} SOL (~{}ms)", tier.name, tier.amount_sol, tier.expected_latency_ms);
+    }
+}
+```
+
+### SenderInfo Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sender_id` | `String` | Sender identifier (e.g., `"nozomi"`, `"0slot"`) |
+| `display_name` | `String` | Human-readable name |
+| `tip_wallets` | `Vec<String>` | Solana wallet addresses for tips |
+| `tip_tiers` | `Vec<TipTier>` | Pricing tiers with speed/cost tradeoffs |
+
+### TipTier Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Tier name (e.g., `"standard"`, `"fast"`, `"ultra_fast"`) |
+| `amount_sol` | `f64` | Tip amount in SOL |
+| `expected_latency_ms` | `u32` | Expected submission latency in milliseconds |
+
+---
+
 ## Atomic Bundles
 
 Submit 2-5 transactions as a Jito-style atomic bundle. All transactions execute sequentially and atomically -- either all land or none do.
