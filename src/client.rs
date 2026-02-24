@@ -25,6 +25,7 @@
 //! ```
 
 use crate::config::Config;
+use crate::connection::selector::WorkerSelector;
 use crate::connection::{FallbackChain, Transport};
 use crate::discovery::DiscoveryClient;
 use crate::error::{Result, SdkError};
@@ -182,7 +183,7 @@ impl SlipstreamClient {
                 .best_region(&response, config.region.as_deref())
                 .ok_or_else(|| SdkError::connection("No healthy workers found via discovery"))?;
 
-            // Get healthy workers in that region
+            // Get healthy workers in that region and convert to endpoints
             let region_workers = discovery.workers_for_region(&response, &region);
             if region_workers.is_empty() {
                 return Err(SdkError::connection(format!(
@@ -191,21 +192,77 @@ impl SlipstreamClient {
                 )));
             }
 
-            // Select the first healthy worker (latency-based selection happens at transport level)
-            let worker = &region_workers[0];
-            let endpoint = DiscoveryClient::worker_to_endpoint(worker);
+            let endpoints: Vec<_> = region_workers
+                .iter()
+                .map(|w| DiscoveryClient::worker_to_endpoint(w))
+                .collect();
+
+            // Measure latency and rank workers (short-circuits if only 1 worker)
+            let selector = WorkerSelector::new(endpoints.clone());
+            selector.measure_all().await;
+            let latencies = selector.get_all_latencies().await;
+
+            let mut ranked = endpoints;
+            ranked.sort_by_key(|w| {
+                latencies
+                    .get(&w.id)
+                    .filter(|m| m.reachable)
+                    .map(|m| m.rtt_ms)
+                    .unwrap_or(u64::MAX)
+            });
 
             info!(
-                worker_id = %endpoint.id,
                 region = %region,
-                ip = %worker.ip,
-                "Selected worker via discovery"
+                workers = ranked.len(),
+                best_worker = %ranked[0].id,
+                "Ranked workers by latency"
             );
 
-            config.selected_worker = Some(endpoint);
-            config.region = Some(region);
+            // Try workers in latency order — fall to next on connection failure
+            let mut last_error: Option<SdkError> = None;
+            for (i, worker) in ranked.iter().enumerate() {
+                info!(
+                    worker_id = %worker.id,
+                    region = %region,
+                    attempt = i + 1,
+                    total = ranked.len(),
+                    "Trying worker"
+                );
+                config.selected_worker = Some(worker.clone());
+                config.region = Some(region.clone());
+
+                let fallback_chain = FallbackChain::new(config.protocol_timeouts.clone());
+                match fallback_chain.connect(&config).await {
+                    Ok(mut transport) => {
+                        match transport.connect(&config).await {
+                            Ok(connection_info) => {
+                                info!(
+                                    session_id = %connection_info.session_id,
+                                    protocol = %connection_info.protocol,
+                                    worker_id = %worker.id,
+                                    "Connected to Slipstream"
+                                );
+                                return Self::finish_connect(config, transport, connection_info).await;
+                            }
+                            Err(e) => {
+                                warn!(worker_id = %worker.id, error = %e, "Worker connection failed, trying next");
+                                last_error = Some(e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(worker_id = %worker.id, error = %e, "All protocols failed for worker, trying next");
+                        last_error = Some(e);
+                    }
+                }
+            }
+
+            return Err(last_error.unwrap_or_else(|| SdkError::connection(
+                format!("All workers in region '{}' rejected connection", region)
+            )));
         }
 
+        // Explicit endpoint or worker was set — connect directly
         info!(
             region = ?config.region,
             endpoint = ?config.endpoint,
@@ -214,7 +271,6 @@ impl SlipstreamClient {
 
         let fallback_chain = FallbackChain::new(config.protocol_timeouts.clone());
         let mut transport = fallback_chain.connect(&config).await?;
-
         let connection_info = transport.connect(&config).await?;
 
         info!(
@@ -223,6 +279,15 @@ impl SlipstreamClient {
             "Connected to Slipstream"
         );
 
+        Self::finish_connect(config, transport, connection_info).await
+    }
+
+    /// Shared post-connection setup: health monitor, keepalive, webhook registration.
+    async fn finish_connect(
+        config: Config,
+        transport: Box<dyn Transport>,
+        connection_info: ConnectionInfo,
+    ) -> Result<Self> {
         let transport = Arc::new(RwLock::new(transport));
 
         // Start health monitor to handle auto-reconnection with subscription tracking
