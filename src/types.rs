@@ -139,6 +139,14 @@ pub struct TransactionResult {
     pub status: TransactionStatus,
     /// Slot where transaction landed (if confirmed)
     pub slot: Option<u64>,
+    /// Slot when transaction was sent to the sender
+    pub slot_sent: Option<u64>,
+    /// Slot when the sender acknowledged acceptance
+    pub slot_accepted: Option<u64>,
+    /// Slot where transaction landed on-chain (if confirmed)
+    pub slot_landed: Option<u64>,
+    /// Difference between landed slot and sent slot
+    pub slot_delta: Option<u64>,
     /// Timestamp
     pub timestamp: u64,
     /// Routing details (if available)

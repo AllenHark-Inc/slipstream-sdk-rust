@@ -83,13 +83,30 @@ enum ServerMessage {
         request_id: String,
         transaction_id: String,
         status: String,
+        #[serde(default)]
+        signature: Option<String>,
+        #[serde(default)]
+        slot: Option<u64>,
+        #[serde(default)]
+        slot_sent: Option<u64>,
+        #[serde(default)]
+        slot_accepted: Option<u64>,
         timestamp: u64,
+        #[serde(default)]
+        routing: Option<WsRoutingInfo>,
     },
     TransactionConfirmed {
         request_id: String,
         transaction_id: String,
-        signature: String,
-        slot: u64,
+        #[serde(default)]
+        signature: Option<String>,
+        #[serde(default)]
+        slot: Option<u64>,
+        #[serde(default)]
+        slot_sent: Option<u64>,
+        #[serde(default)]
+        slot_accepted: Option<u64>,
+        #[serde(default)]
         routing: Option<WsRoutingInfo>,
     },
     TransactionFailed {
@@ -183,10 +200,17 @@ struct WsLatestSlot {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WsRoutingInfo {
+    /// Worker sends `region`, CP sends `selected_region`
+    #[serde(default, alias = "selectedRegion")]
     region: String,
+    /// Worker sends `sender`, CP sends `selected_sender`
+    #[serde(default, alias = "selectedSender")]
     sender: String,
+    #[serde(default)]
     routing_latency_ms: u32,
+    #[serde(default)]
     sender_latency_ms: u32,
+    #[serde(default)]
     total_latency_ms: u32,
 }
 
@@ -560,6 +584,8 @@ impl Transport for WebSocketTransport {
         let mut transaction_id = String::new();
         let mut signature = None;
         let mut slot = None;
+        let mut slot_sent = None;
+        let mut slot_accepted = None;
         let mut status = TransactionStatus::Pending;
         let mut routing = None;
         let mut error = None;
@@ -585,20 +611,36 @@ impl Transport for WebSocketTransport {
                     transaction_id = tid;
                     status = TransactionStatus::Processing;
                 }
-                ServerMessage::TransactionUpdate { request_id: rid, status: s, .. } if rid == request_id => {
+                ServerMessage::TransactionUpdate { request_id: rid, transaction_id: tid, status: s, signature: sig, slot: sl, slot_sent: ss, slot_accepted: sa, routing: r, .. } if rid == request_id => {
+                    if !tid.is_empty() { transaction_id = tid; }
+                    if let Some(s) = sig { signature = Some(s); }
+                    if let Some(s) = sl { slot = Some(s); }
+                    slot_sent = ss.or(slot_sent);
+                    slot_accepted = sa.or(slot_accepted);
+                    if let Some(ri) = r {
+                        routing = Some(crate::types::RoutingInfo {
+                            region: ri.region,
+                            sender: ri.sender,
+                            routing_latency_ms: ri.routing_latency_ms,
+                            sender_latency_ms: ri.sender_latency_ms,
+                            total_latency_ms: ri.total_latency_ms,
+                        });
+                    }
                     status = match s.as_str() {
                         "pending" => TransactionStatus::Pending,
                         "processing" => TransactionStatus::Processing,
                         "sent" => TransactionStatus::Sent,
-                        "confirmed" => TransactionStatus::Confirmed,
-                        "failed" => TransactionStatus::Failed,
+                        "confirmed" => { break; }
+                        "failed" => { break; }
                         _ => TransactionStatus::Processing,
                     };
                 }
-                ServerMessage::TransactionConfirmed { request_id: rid, transaction_id: tid, signature: sig, slot: s, routing: r } if rid == request_id => {
+                ServerMessage::TransactionConfirmed { request_id: rid, transaction_id: tid, signature: sig, slot: sl, slot_sent: ss, slot_accepted: sa, routing: r } if rid == request_id => {
                     transaction_id = tid;
-                    signature = Some(sig);
-                    slot = Some(s);
+                    if let Some(s) = sig { signature = Some(s); }
+                    if let Some(s) = sl { slot = Some(s); }
+                    slot_sent = ss.or(slot_sent);
+                    slot_accepted = sa.or(slot_accepted);
                     status = TransactionStatus::Confirmed;
                     routing = r.map(|ri| crate::types::RoutingInfo {
                         region: ri.region,
@@ -625,12 +667,23 @@ impl Transport for WebSocketTransport {
             }
         }
 
+        // Compute slot_landed and slot_delta
+        let slot_landed = if status == TransactionStatus::Confirmed { slot } else { None };
+        let slot_delta = match (slot_sent, slot_landed) {
+            (Some(sent), Some(landed)) if landed >= sent => Some(landed - sent),
+            _ => None,
+        };
+
         Ok(TransactionResult {
             request_id,
             transaction_id,
             signature,
             status,
             slot,
+            slot_sent,
+            slot_accepted,
+            slot_landed,
+            slot_delta,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

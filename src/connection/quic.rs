@@ -590,6 +590,10 @@ impl Transport for QuicTransport {
             signature,
             status,
             slot: None,
+            slot_sent: None,
+            slot_accepted: None,
+            slot_landed: None,
+            slot_delta: None,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

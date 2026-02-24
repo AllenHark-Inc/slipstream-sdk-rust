@@ -1214,6 +1214,12 @@ match client.submit_transaction(&tx_bytes).await {
 SLIPSTREAM_API_KEY=sk_test_xxx cargo run --example streaming_callbacks
 ```
 
+## Contact
+
+- Website: https://allenhark.com
+- Contact: https://allenhark.com/contact
+- Discord: https://discord.gg/JpzS72MAKG
+
 ## License
 
 Apache-2.0

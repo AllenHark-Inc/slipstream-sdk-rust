@@ -180,6 +180,10 @@ impl Transport for HttpTransport {
             signature: result.signature,
             status: parse_status(&result.status),
             slot: result.slot,
+            slot_sent: None,
+            slot_accepted: None,
+            slot_landed: None,
+            slot_delta: None,
             timestamp: result.timestamp,
             routing: result.routing.map(|r| crate::types::RoutingInfo {
                 region: r.region,
