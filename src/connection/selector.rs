@@ -312,7 +312,7 @@ impl WorkerSelector {
         };
 
         let start = Instant::now();
-        let health_url = format!("{}/health/", endpoint.trim_end_matches('/'));
+        let health_url = format!("{}/health", endpoint.trim_end_matches('/'));
 
         let result = tokio::time::timeout(timeout, async {
             reqwest::Client::new()
