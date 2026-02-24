@@ -364,10 +364,13 @@ impl Transport for QuicTransport {
             return Ok(ConnectionInfo {
                 session_id,
                 protocol: "quic".to_string(),
-                region: None,
-                server_time: 0,
-                features: vec![],
-                rate_limit: crate::types::RateLimitInfo { rps: 0, burst: 0 },
+                region: config.region.clone(),
+                server_time: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                features: vec!["streaming".to_string(), "bidirectional".to_string()],
+                rate_limit: crate::types::RateLimitInfo { rps: 1000, burst: 2000 },
             });
         }
 
@@ -410,11 +413,16 @@ impl Transport for QuicTransport {
             *conn_guard = Some(connection.clone());
         }
 
-        // Generate session ID from auth result
-        let session_id = if auth_result.starts_with("ok:") {
-            format!("quic-{}", &auth_result[3..])
+        // Parse auth result: format is "ok:<key_prefix>:<region>"
+        let (session_id, server_region) = if auth_result.starts_with("ok:") {
+            let payload = &auth_result[3..];
+            // Split on ':' — first part is key_prefix, second (if present) is region
+            let parts: Vec<&str> = payload.splitn(2, ':').collect();
+            let key_prefix = parts[0];
+            let region = parts.get(1).map(|r| r.to_string());
+            (format!("quic-{}", key_prefix), region)
         } else {
-            uuid::Uuid::new_v4().to_string()
+            (uuid::Uuid::new_v4().to_string(), None)
         };
 
         {
@@ -424,8 +432,12 @@ impl Transport for QuicTransport {
 
         self.connected.store(true, Ordering::SeqCst);
 
+        // Prefer server-reported region, fall back to client config
+        let region = server_region.or_else(|| config.region.clone());
+
         info!(
             session_id = %session_id,
+            region = ?region,
             remote = %connection.remote_address(),
             "QUIC transport connected"
         );
@@ -433,7 +445,7 @@ impl Transport for QuicTransport {
         Ok(ConnectionInfo {
             session_id,
             protocol: "quic".to_string(),
-            region: config.region.clone(),
+            region,
             server_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
