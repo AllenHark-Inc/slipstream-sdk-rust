@@ -377,8 +377,8 @@ impl WorkerEndpoint {
             region: region.to_string(),
             quic: Some(format!("{}:4433", ip)),
             grpc: Some(format!("http://{}:10000", ip)),
-            websocket: None,
-            http: None,
+            websocket: Some(format!("ws://{}:9000/ws", ip)),
+            http: Some(format!("http://{}:9000", ip)),
         }
     }
 

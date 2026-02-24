@@ -26,6 +26,8 @@ pub struct DiscoveryRegion {
     pub name: String,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
+    /// Best worker-to-leader RTT in this region (ms), if known
+    pub leader_rtt_ms: Option<f64>,
 }
 
 /// Worker information from discovery

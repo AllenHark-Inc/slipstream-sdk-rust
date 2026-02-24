@@ -351,19 +351,23 @@ impl SlipstreamClient {
             subscription_tracker,
         };
 
-        // Auto-register webhook if configured
-        if client.config.webhook_url.is_some() {
-            let url = client.config.webhook_url.clone().unwrap();
-            let events = client.config.webhook_events.clone();
-            let level = client.config.webhook_notification_level.clone();
-            match client
-                .register_webhook(&url, Some(events), Some(level))
-                .await
-            {
-                Ok(_) => info!("Webhook auto-registered at {}", url),
-                Err(e) => debug!("Failed to auto-register webhook: {}", e),
+        // Auto-register webhook and fetch initial tip concurrently
+        let webhook_fut = async {
+            if client.config.webhook_url.is_some() {
+                let url = client.config.webhook_url.clone().unwrap();
+                let events = client.config.webhook_events.clone();
+                let level = client.config.webhook_notification_level.clone();
+                match client
+                    .register_webhook(&url, Some(events), Some(level))
+                    .await
+                {
+                    Ok(_) => info!("Webhook auto-registered at {}", url),
+                    Err(e) => debug!("Failed to auto-register webhook: {}", e),
+                }
             }
-        }
+        };
+        let tip_fut = client.fetch_initial_tip();
+        tokio::join!(webhook_fut, tip_fut);
 
         Ok(client)
     }
@@ -546,6 +550,67 @@ impl SlipstreamClient {
     pub(crate) async fn set_latest_tip(&self, tip: TipInstruction) {
         let mut latest = self.latest_tip.write().await;
         *latest = Some(tip);
+    }
+
+    /// Eagerly fetch tip instructions from the HTTP endpoint so
+    /// get_latest_tip() is populated immediately after connect().
+    async fn fetch_initial_tip(&self) {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/tip-instructions", base_url);
+
+        let response = match self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r,
+            _ => return,
+        };
+
+        // Worker returns snake_case fields, map to SDK's TipInstruction
+        #[derive(serde::Deserialize)]
+        struct RawTip {
+            sender_id: Option<String>,
+            tip_wallet: Option<String>,
+            #[serde(default)]
+            tip_amount_lamports: u64,
+            tier: Option<String>,
+            #[serde(default)]
+            expected_latency_ms: u32,
+            #[serde(default)]
+            confidence: u32,
+            #[serde(default)]
+            valid_until_slot: u64,
+            #[serde(default)]
+            timestamp: u64,
+        }
+
+        if let Ok(tips) = response.json::<Vec<RawTip>>().await {
+            if let Some(raw) = tips.last() {
+                let tip = TipInstruction {
+                    timestamp: if raw.timestamp > 0 {
+                        raw.timestamp
+                    } else {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64
+                    },
+                    sender: raw.sender_id.clone().unwrap_or_default(),
+                    sender_name: raw.sender_id.clone().unwrap_or_default(),
+                    tip_wallet_address: raw.tip_wallet.clone().unwrap_or_default(),
+                    tip_amount_sol: raw.tip_amount_lamports as f64 / 1_000_000_000.0,
+                    tip_tier: raw.tier.clone().unwrap_or_else(|| "standard".to_string()),
+                    expected_latency_ms: raw.expected_latency_ms,
+                    confidence: raw.confidence,
+                    valid_until_slot: raw.valid_until_slot,
+                    alternative_senders: vec![],
+                };
+                self.set_latest_tip(tip).await;
+            }
+        }
     }
 
     /// Get current connection status
