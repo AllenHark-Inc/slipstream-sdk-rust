@@ -532,8 +532,8 @@ impl Transport for QuicTransport {
             .await
             .map_err(|e| SdkError::connection(format!("Failed to finish send: {}", e)))?;
 
-        // Read response
-        let mut response_buf = vec![0u8; 256];
+        // Read response — buffer large enough for signature(64) + routing + slots
+        let mut response_buf = vec![0u8; 512];
         let n = recv
             .read(&mut response_buf)
             .await
@@ -544,13 +544,15 @@ impl Transport for QuicTransport {
             return Err(SdkError::protocol("Response too short"));
         }
 
-        // Parse response:
-        // - 4 bytes: request_id (u32 BE)
-        // - 1 byte: status
-        // - 1 byte: has_signature
-        // - 64 bytes: signature (if has_signature)
-        // - 2 bytes: error_len (u16 BE)
-        // - N bytes: error message
+        // Parse response wire format:
+        //   request_id: u32 BE (4)
+        //   status: u8 (1)
+        //   has_signature: u8 (1) + signature: [u8;64] (if 1)
+        //   error_len: u16 BE (2) + error: [u8;N]
+        //   sender_len: u8 (1) + sender: [u8;N]
+        //   region_len: u8 (1) + region: [u8;N]
+        //   slot_sent: u8 flag (1) + u64 BE (8 if flag=1)
+        //   slot_accepted: u8 flag (1) + u64 BE (8 if flag=1)
 
         let resp_request_id = u32::from_be_bytes([
             response_buf[0],
@@ -569,6 +571,7 @@ impl Transport for QuicTransport {
             offset += 64;
             Some(bs58::encode(sig).into_string())
         } else {
+            if has_signature { offset = n.min(offset + 64); }
             None
         };
 
@@ -577,7 +580,81 @@ impl Transport for QuicTransport {
             let error_len = u16::from_be_bytes([response_buf[offset], response_buf[offset + 1]]) as usize;
             offset += 2;
             if error_len > 0 && n >= offset + error_len {
-                Some(String::from_utf8_lossy(&response_buf[offset..offset + error_len]).to_string())
+                let msg = String::from_utf8_lossy(&response_buf[offset..offset + error_len]).to_string();
+                offset += error_len;
+                Some(msg)
+            } else {
+                offset += error_len.min(n - offset);
+                None
+            }
+        } else {
+            None
+        };
+
+        // Parse sender ID (length-prefixed u8)
+        let sender_id = if n > offset {
+            let sender_len = response_buf[offset] as usize;
+            offset += 1;
+            if sender_len > 0 && n >= offset + sender_len {
+                let s = String::from_utf8_lossy(&response_buf[offset..offset + sender_len]).to_string();
+                offset += sender_len;
+                Some(s)
+            } else {
+                offset += sender_len.min(n.saturating_sub(offset));
+                None
+            }
+        } else {
+            None
+        };
+
+        // Parse region (length-prefixed u8)
+        let region = if n > offset {
+            let region_len = response_buf[offset] as usize;
+            offset += 1;
+            if region_len > 0 && n >= offset + region_len {
+                let r = String::from_utf8_lossy(&response_buf[offset..offset + region_len]).to_string();
+                offset += region_len;
+                Some(r)
+            } else {
+                offset += region_len.min(n.saturating_sub(offset));
+                None
+            }
+        } else {
+            None
+        };
+
+        // Parse slot_sent (flag + u64 BE)
+        let slot_sent = if n > offset && response_buf[offset] == 1 {
+            offset += 1;
+            if n >= offset + 8 {
+                let slot = u64::from_be_bytes([
+                    response_buf[offset], response_buf[offset+1],
+                    response_buf[offset+2], response_buf[offset+3],
+                    response_buf[offset+4], response_buf[offset+5],
+                    response_buf[offset+6], response_buf[offset+7],
+                ]);
+                offset += 8;
+                Some(slot)
+            } else {
+                None
+            }
+        } else {
+            if n > offset { offset += 1; }
+            None
+        };
+
+        // Parse slot_accepted (flag + u64 BE)
+        let slot_accepted = if n > offset && response_buf[offset] == 1 {
+            offset += 1;
+            if n >= offset + 8 {
+                let slot = u64::from_be_bytes([
+                    response_buf[offset], response_buf[offset+1],
+                    response_buf[offset+2], response_buf[offset+3],
+                    response_buf[offset+4], response_buf[offset+5],
+                    response_buf[offset+6], response_buf[offset+7],
+                ]);
+                let _ = offset + 8;
+                Some(slot)
             } else {
                 None
             }
@@ -596,21 +673,32 @@ impl Transport for QuicTransport {
 
         let transaction_id = format!("tx-{}", request_id);
 
+        // Build routing info if we have sender or region
+        let routing = if sender_id.is_some() || region.is_some() {
+            Some(crate::types::RoutingInfo {
+                region: region.unwrap_or_default(),
+                sender: sender_id.unwrap_or_default(),
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
         Ok(TransactionResult {
             request_id: format!("req-{}", resp_request_id),
             transaction_id,
             signature,
             status,
             slot: None,
-            slot_sent: None,
-            slot_accepted: None,
+            slot_sent,
+            slot_accepted,
             slot_landed: None,
             slot_delta: None,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64,
-            routing: None,
+            routing,
             error: error.map(|msg| crate::types::TransactionError {
                 code: "QUIC_ERROR".to_string(),
                 message: msg,

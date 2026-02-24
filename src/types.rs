@@ -197,8 +197,8 @@ impl TransactionStatus {
 }
 
 /// Routing information for a transaction
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct RoutingInfo {
     /// Region used
     pub region: String,
