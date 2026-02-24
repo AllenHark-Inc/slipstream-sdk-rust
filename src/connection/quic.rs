@@ -532,16 +532,15 @@ impl Transport for QuicTransport {
             .await
             .map_err(|e| SdkError::connection(format!("Failed to finish send: {}", e)))?;
 
-        // Read response — buffer large enough for signature(64) + routing + slots
-        let mut response_buf = vec![0u8; 512];
-        let n = recv
-            .read(&mut response_buf)
+        // Read full response (worker sends FIN after writing)
+        let response_buf = recv
+            .read_to_end(1024)
             .await
-            .map_err(|e| SdkError::connection(format!("Failed to read response: {}", e)))?
-            .ok_or_else(|| SdkError::transaction("Connection closed before response"))?;
+            .map_err(|e| SdkError::connection(format!("Failed to read response: {}", e)))?;
 
+        let n = response_buf.len();
         if n < 6 {
-            return Err(SdkError::protocol("Response too short"));
+            return Err(SdkError::protocol(format!("Response too short: {} bytes", n)));
         }
 
         // Parse response wire format:
