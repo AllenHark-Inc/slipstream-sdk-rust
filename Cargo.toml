@@ -1,6 +1,6 @@
 [package]
 name = "allenhark-slipstream"
-version = "0.1.2"
+version = "0.2.4"
 edition = "2021"
 description = "Slipstream client SDK for Rust - Solana transaction relay"
 license = "Apache-2.0"
