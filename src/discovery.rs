@@ -165,12 +165,15 @@ impl DiscoveryClient {
         let http_endpoint = worker.ports.http
             .map(|port| format!("http://{}:{}", worker.ip, port));
 
+        let ws_endpoint = worker.ports.ws
+            .map(|port| format!("ws://{}:{}/ws", worker.ip, port));
+
         WorkerEndpoint::with_endpoints(
             &worker.id,
             &worker.region,
             Some(format!("{}:{}", worker.ip, worker.ports.quic)),
             Some(format!("http://{}:{}", worker.ip, worker.ports.grpc)),
-            None, // Worker has no WebSocket listener
+            ws_endpoint,
             http_endpoint,
         )
     }
