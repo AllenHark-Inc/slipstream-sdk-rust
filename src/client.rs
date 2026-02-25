@@ -1315,6 +1315,45 @@ impl SlipstreamClient {
         Ok(stats)
     }
 
+    /// Get transaction status by Solana signature.
+    ///
+    /// Returns slot timing (sent, accepted, landed), landing status,
+    /// latency breakdown, and routing details.
+    pub async fn get_transaction_status(&self, signature: &str) -> Result<TransactionResult> {
+        let base_url = self.config.get_endpoint(crate::types::Protocol::Http);
+        let url = format!("{}/v1/transactions/{}/status", base_url, signature);
+        debug!(url = %url, signature = %signature, "Fetching transaction status");
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SdkError::auth("Invalid API key"));
+        }
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(SdkError::Internal(format!(
+                "Transaction not found for signature: {}",
+                signature
+            )));
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SdkError::Internal(format!(
+                "Failed to get transaction status: {}",
+                error_text
+            )));
+        }
+
+        let result: TransactionResult = response.json().await?;
+        Ok(result)
+    }
+
     // === Solana RPC Proxy ===
 
     /// Execute a Solana JSON-RPC call via the Slipstream proxy.
