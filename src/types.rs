@@ -273,6 +273,11 @@ pub struct SubmitOptions {
     /// Retry policy (overrides max_retries with more control)
     #[serde(default)]
     pub retry: Option<RetryOptions>,
+    /// Send directly to validator TPU ports via UDP (bypasses senders).
+    /// Billed at 0.0001 SOL per transaction. Fire-and-forget — no sender
+    /// acknowledgment. Use standard confirmation polling to check landing.
+    #[serde(default)]
+    pub tpu_submission: bool,
 }
 
 impl Default for SubmitOptions {
@@ -284,6 +289,7 @@ impl Default for SubmitOptions {
             timeout_ms: default_timeout_ms(),
             dedup_id: None,
             retry: None,
+            tpu_submission: false,
         }
     }
 }

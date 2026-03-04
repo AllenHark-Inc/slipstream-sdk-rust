@@ -239,6 +239,7 @@ impl Transport for GrpcTransport {
                 preferred_sender: options.preferred_sender.clone().unwrap_or_default(),
                 max_retries: options.max_retries,
                 timeout_ms: options.timeout_ms,
+                tpu_submission: options.tpu_submission,
             }),
         };
 

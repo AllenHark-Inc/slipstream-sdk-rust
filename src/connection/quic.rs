@@ -30,6 +30,9 @@ pub enum StreamType {
     LatestBlockhash = 0x06,
     LatestSlot = 0x07,
     Ping = 0x08,
+    BundleSubmit = 0x09,
+    TransactionStatus = 0x0A,
+    TpuSubmit = 0x0B,
 }
 
 /// Transaction response status codes
@@ -489,7 +492,7 @@ impl Transport for QuicTransport {
     async fn submit_transaction(
         &self,
         transaction: &[u8],
-        _options: &SubmitOptions,
+        options: &SubmitOptions,
     ) -> Result<TransactionResult> {
         if !self.is_connected() {
             return Err(SdkError::NotConnected);
@@ -519,7 +522,12 @@ impl Transport for QuicTransport {
 
         // Build transaction frame: stream_type (1 byte) + transaction data
         let mut frame = Vec::with_capacity(1 + transaction.len());
-        frame.push(StreamType::TransactionSubmit as u8);
+        let stream_type = if options.tpu_submission {
+            StreamType::TpuSubmit
+        } else {
+            StreamType::TransactionSubmit
+        };
+        frame.push(stream_type as u8);
         frame.extend_from_slice(transaction);
 
         // Send transaction

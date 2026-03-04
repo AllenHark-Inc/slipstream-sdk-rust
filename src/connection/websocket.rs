@@ -53,6 +53,8 @@ struct WsSubmitOptions {
     preferred_sender: Option<String>,
     max_retries: u32,
     timeout_ms: u64,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    tpu_submission: bool,
 }
 
 /// WebSocket server message types
@@ -573,6 +575,7 @@ impl Transport for WebSocketTransport {
                 preferred_sender: options.preferred_sender.clone(),
                 max_retries: options.max_retries,
                 timeout_ms: options.timeout_ms,
+                tpu_submission: options.tpu_submission,
             },
         })
         .await?;

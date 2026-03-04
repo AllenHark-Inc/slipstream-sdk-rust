@@ -22,6 +22,7 @@ The official Rust client for **AllenHark Slipstream**, the high-performance Sola
 - **Atomic bundles** -- submit 2-5 transactions as a Jito-style atomic bundle
 - **Solana RPC proxy** -- 22 Solana JSON-RPC methods proxied through Slipstream (accounts, transactions, tokens, fees, cluster info)
 - **Deduplication** -- prevent duplicate submissions with custom dedup IDs
+- **TPU submission** -- send transactions directly to validator TPU ports via UDP, bypassing senders (0.0001 SOL per TX)
 
 ## Installation
 
@@ -277,6 +278,7 @@ let result = client.submit_transaction_with_options(&tx_bytes, &SubmitOptions {
 | `max_retries` | `u32` | `2` | Retry attempts on failure |
 | `timeout_ms` | `u64` | `30000` | Timeout per attempt in milliseconds |
 | `dedup_id` | `Option<String>` | `None` | Custom deduplication ID (prevents double-submit) |
+| `tpu_submission` | `bool` | `false` | Send directly to validator TPU ports via UDP (bypasses senders, 0.0001 SOL per TX) |
 
 ### TransactionResult Fields
 
@@ -313,6 +315,23 @@ let result = client.submit_transaction_with_options(&tx_bytes, &SubmitOptions {
 | `routing_latency_ms` | `u32` | Time spent in routing logic (ms) |
 | `sender_latency_ms` | `u32` | Time spent in sender submission (ms) |
 | `total_latency_ms` | `u32` | Total end-to-end latency (ms) |
+
+### TPU Submission
+
+Send transactions directly to Solana validator TPU ports via UDP, bypassing external sender services. Targets the current leader + next 3 leaders for redundancy. Fire-and-forget -- no sender acknowledgment, but transactions are still tracked by signature for confirmation polling.
+
+```rust
+use allenhark_slipstream::SubmitOptions;
+
+let result = client.submit_transaction_with_options(&tx_bytes, SubmitOptions {
+    tpu_submission: true,
+    ..Default::default()
+}).await?;
+println!("Signature: {:?}", result.signature);
+// Use standard confirmation polling to check landing
+```
+
+**TPU submission billing:** 0.0001 SOL (100,000 lamports) per transaction -- separate from standard sender-based billing.
 
 ---
 
@@ -652,6 +671,7 @@ Token-based billing system. Paid tiers (Standard/Pro/Enterprise) deduct tokens p
 | Operation | Cost | Notes |
 |-----------|------|-------|
 | Transaction submission | 1 token (0.00005 SOL) | Per transaction sent to Solana |
+| TPU submission | 0.0001 SOL (100,000 lamports) | Direct to validator TPU ports, bypasses senders |
 | Bundle submission | 5 tokens (0.00025 SOL) | Per bundle (2-5 transactions, flat rate) |
 | Stream subscription | 1 token (0.00005 SOL) | Per stream type; 1-hour reconnect grace period |
 | Webhook delivery | 0.00001 SOL (10,000 lamports) | Per successful POST delivery; retries not charged |
