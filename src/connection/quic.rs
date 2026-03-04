@@ -553,7 +553,7 @@ impl Transport for QuicTransport {
         //   slot_sent: u8 flag (1) + u64 BE (8 if flag=1)
         //   slot_accepted: u8 flag (1) + u64 BE (8 if flag=1)
 
-        let resp_request_id = u32::from_be_bytes([
+        let _resp_request_id = u32::from_be_bytes([
             response_buf[0],
             response_buf[1],
             response_buf[2],
@@ -670,7 +670,7 @@ impl Transport for QuicTransport {
             None => TransactionStatus::Failed,
         };
 
-        let transaction_id = format!("tx-{}", request_id);
+        let transaction_id = uuid::Uuid::new_v4().to_string();
 
         // Build routing info if we have sender or region
         let routing = if sender_id.is_some() || region.is_some() {
@@ -684,7 +684,7 @@ impl Transport for QuicTransport {
         };
 
         Ok(TransactionResult {
-            request_id: format!("req-{}", resp_request_id),
+            request_id: uuid::Uuid::new_v4().to_string(),
             transaction_id,
             signature,
             status,

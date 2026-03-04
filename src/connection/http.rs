@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -29,7 +29,6 @@ pub struct HttpTransport {
     base_url: String,
     connected: AtomicBool,
     session_id: Option<String>,
-    request_counter: AtomicU64,
 }
 
 impl HttpTransport {
@@ -44,14 +43,12 @@ impl HttpTransport {
             base_url: String::new(),
             connected: AtomicBool::new(false),
             session_id: None,
-            request_counter: AtomicU64::new(0),
         }
     }
 
     /// Generate a unique request ID
     fn next_request_id(&self) -> String {
-        let id = self.request_counter.fetch_add(1, Ordering::Relaxed);
-        format!("req-{}", id)
+        uuid::Uuid::new_v4().to_string()
     }
 
     /// Build authorization header
@@ -599,7 +596,8 @@ mod tests {
         let id1 = transport.next_request_id();
         let id2 = transport.next_request_id();
         assert_ne!(id1, id2);
-        assert!(id1.starts_with("req-"));
+        // UUIDs are 36 chars: 8-4-4-4-12
+        assert_eq!(id1.len(), 36);
     }
 
     #[test]
