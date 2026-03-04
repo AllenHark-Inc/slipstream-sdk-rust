@@ -182,6 +182,11 @@ impl Transport for HttpTransport {
             slot_accepted: None,
             slot_landed: None,
             slot_delta: None,
+            commitment_level: None,
+            confirmations: None,
+            slot_processed: None,
+            slot_confirmed: None,
+            slot_finalized: None,
             timestamp: result.timestamp,
             routing: result.routing.map(|r| crate::types::RoutingInfo {
                 region: r.region,

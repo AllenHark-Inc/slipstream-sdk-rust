@@ -720,6 +720,11 @@ impl Transport for QuicTransport {
             slot_accepted,
             slot_landed: None,
             slot_delta: None,
+            commitment_level: None,
+            confirmations: None,
+            slot_processed: None,
+            slot_confirmed: None,
+            slot_finalized: None,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

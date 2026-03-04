@@ -147,6 +147,21 @@ pub struct TransactionResult {
     pub slot_landed: Option<u64>,
     /// Difference between landed slot and sent slot
     pub slot_delta: Option<u64>,
+    /// Solana commitment level (processed/confirmed/finalized)
+    #[serde(default)]
+    pub commitment_level: Option<String>,
+    /// Number of cluster confirmations (None once finalized)
+    #[serde(default)]
+    pub confirmations: Option<u64>,
+    /// Slot at which transaction reached "processed" commitment
+    #[serde(default)]
+    pub slot_processed: Option<u64>,
+    /// Slot at which transaction reached "confirmed" commitment
+    #[serde(default)]
+    pub slot_confirmed: Option<u64>,
+    /// Slot at which transaction reached "finalized" commitment
+    #[serde(default)]
+    pub slot_finalized: Option<u64>,
     /// Timestamp
     pub timestamp: u64,
     /// Routing details (if available)

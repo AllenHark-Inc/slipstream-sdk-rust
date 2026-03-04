@@ -689,6 +689,11 @@ impl Transport for WebSocketTransport {
             slot_accepted,
             slot_landed,
             slot_delta,
+            commitment_level: None,
+            confirmations: None,
+            slot_processed: None,
+            slot_confirmed: None,
+            slot_finalized: None,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
