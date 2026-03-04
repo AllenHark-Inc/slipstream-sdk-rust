@@ -206,11 +206,11 @@ struct WsRoutingInfo {
     /// Worker sends `sender`, CP sends `selected_sender`
     #[serde(default, alias = "selectedSender")]
     sender: String,
-    #[serde(default)]
+    #[serde(default, alias = "routing_latency_ms")]
     routing_latency_ms: u32,
-    #[serde(default)]
+    #[serde(default, alias = "sender_latency_ms")]
     sender_latency_ms: u32,
-    #[serde(default)]
+    #[serde(default, alias = "total_latency_ms")]
     total_latency_ms: u32,
 }
 

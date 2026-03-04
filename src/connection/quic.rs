@@ -652,13 +652,29 @@ impl Transport for QuicTransport {
                     response_buf[offset+4], response_buf[offset+5],
                     response_buf[offset+6], response_buf[offset+7],
                 ]);
-                let _ = offset + 8;
+                offset += 8;
                 Some(slot)
             } else {
                 None
             }
         } else {
+            if n > offset { offset += 1; }
             None
+        };
+
+        // Parse latency fields (u32 BE each, always present if data remains)
+        let (latency_ms, sender_latency_ms) = if n >= offset + 8 {
+            let total = u32::from_be_bytes([
+                response_buf[offset], response_buf[offset+1],
+                response_buf[offset+2], response_buf[offset+3],
+            ]);
+            let sender = u32::from_be_bytes([
+                response_buf[offset+4], response_buf[offset+5],
+                response_buf[offset+6], response_buf[offset+7],
+            ]);
+            (total, sender)
+        } else {
+            (0, 0)
         };
 
         // Map status to TransactionStatus
@@ -672,12 +688,15 @@ impl Transport for QuicTransport {
 
         let transaction_id = uuid::Uuid::new_v4().to_string();
 
-        // Build routing info if we have sender or region
-        let routing = if sender_id.is_some() || region.is_some() {
+        // Build routing info
+        let routing_latency = latency_ms.saturating_sub(sender_latency_ms);
+        let routing = if sender_id.is_some() || region.is_some() || latency_ms > 0 {
             Some(crate::types::RoutingInfo {
                 region: region.unwrap_or_default(),
                 sender: sender_id.unwrap_or_default(),
-                ..Default::default()
+                routing_latency_ms: routing_latency,
+                sender_latency_ms,
+                total_latency_ms: latency_ms,
             })
         } else {
             None
