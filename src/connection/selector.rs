@@ -3,13 +3,12 @@
 //! Selects the best worker endpoint based on measured latency.
 
 use crate::error::{Result, SdkError};
-use crate::types::{LeaderHint, Protocol, WorkerEndpoint};
+use crate::types::{LeaderHint, WorkerEndpoint};
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Default cache TTL for latency measurements
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(30);

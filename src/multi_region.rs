@@ -70,6 +70,7 @@ pub struct MultiRegionClient {
     /// Routing update broadcaster
     routing_tx: broadcast::Sender<RoutingRecommendation>,
     /// Leader hint receiver (from primary connection)
+    #[allow(dead_code)]
     leader_hint_tx: Arc<RwLock<Option<mpsc::Sender<LeaderHint>>>>,
 }
 

@@ -142,6 +142,8 @@ message TransactionOptions {
   uint32 max_retries = 3;
   // Timeout in milliseconds
   uint64 timeout_ms = 4;
+  // Send directly to validator TPU ports via UDP (bypasses senders)
+  bool tpu_submission = 5;
 }
 
 // Transaction response - status updates

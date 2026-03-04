@@ -14,7 +14,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -564,7 +564,9 @@ struct HttpErrorInfo {
 struct PollResponse<T> {
     data: Option<T>,
     message_id: String,
+    #[allow(dead_code)]
     timestamp: u64,
+    #[allow(dead_code)]
     has_more: bool,
 }
 

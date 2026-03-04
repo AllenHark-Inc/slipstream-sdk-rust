@@ -32,6 +32,7 @@ enum ClientMessage {
     Subscribe {
         stream: String,
     },
+    #[allow(dead_code)]
     Unsubscribe {
         stream: String,
     },
@@ -93,6 +94,7 @@ enum ServerMessage {
         slot_sent: Option<u64>,
         #[serde(default)]
         slot_accepted: Option<u64>,
+        #[allow(dead_code)]
         timestamp: u64,
         #[serde(default)]
         routing: Option<WsRoutingInfo>,

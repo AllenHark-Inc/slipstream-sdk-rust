@@ -1331,6 +1331,7 @@ impl TransactionBuilder {
             timeout_ms: self.timeout_ms,
             dedup_id: self.dedup_id.clone(),
             retry: None,
+            tpu_submission: false,
         }
     }
 }
