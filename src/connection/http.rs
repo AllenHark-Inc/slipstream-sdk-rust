@@ -70,7 +70,7 @@ impl Transport for HttpTransport {
         self.config = Some(config.clone());
 
         // Verify connectivity by calling a health endpoint
-        let health_url = format!("{}/health/", self.base_url);
+        let health_url = format!("{}/health", self.base_url);
         debug!(url = %health_url, "Checking HTTP connectivity");
 
         let response = self
