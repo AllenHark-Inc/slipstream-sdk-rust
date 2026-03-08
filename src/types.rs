@@ -249,9 +249,6 @@ pub struct RetryOptions {
     /// Base backoff delay in milliseconds (default: 100ms, exponential with jitter)
     #[serde(default = "default_backoff_base_ms")]
     pub backoff_base_ms: u64,
-    /// Whether to retry with a different sender on failure (default: false)
-    #[serde(default)]
-    pub cross_sender_retry: bool,
 }
 
 fn default_backoff_base_ms() -> u64 { 100 }
@@ -261,7 +258,6 @@ impl Default for RetryOptions {
         Self {
             max_retries: default_max_retries(),
             backoff_base_ms: 100,
-            cross_sender_retry: false,
         }
     }
 }
