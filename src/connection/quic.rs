@@ -93,7 +93,7 @@ impl QuicTransport {
         // In production, you'd want proper certificate validation
         let mut crypto = rustls::ClientConfig::builder()
             .with_safe_defaults()
-            .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+            .with_custom_certificate_verifier(Arc::new(SkipServerVerification::new()))
             .with_no_client_auth();
         crypto.alpn_protocols = vec![b"slipstream".to_vec()];
 
@@ -1191,19 +1191,45 @@ impl Transport for QuicTransport {
 /// Custom certificate verifier that skips verification (for development)
 /// In production, use proper certificate validation
 #[derive(Debug)]
-struct SkipServerVerification;
+struct SkipServerVerification {
+    /// Expected SHA-256 of the server's DER certificate, if pinning is enabled
+    /// via `SLIPSTREAM_PINNED_CERT_SHA256` (hex). Otherwise verification is skipped.
+    pinned_sha256: Option<Vec<u8>>,
+}
+
+impl SkipServerVerification {
+    fn new() -> Self {
+        let pinned_sha256 = std::env::var("SLIPSTREAM_PINNED_CERT_SHA256")
+            .ok()
+            .and_then(|h| hex::decode(h.trim()).ok())
+            .filter(|b| b.len() == 32);
+        Self { pinned_sha256 }
+    }
+}
 
 impl rustls::client::ServerCertVerifier for SkipServerVerification {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::Certificate,
+        end_entity: &rustls::Certificate,
         _intermediates: &[rustls::Certificate],
         _server_name: &rustls::ServerName,
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
         _now: std::time::SystemTime,
     ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
+        if let Some(expected) = &self.pinned_sha256 {
+            use sha2::{Digest, Sha256};
+            let actual = Sha256::digest(&end_entity.0);
+            if actual.as_slice() == expected.as_slice() {
+                Ok(rustls::client::ServerCertVerified::assertion())
+            } else {
+                Err(rustls::Error::General(
+                    "server certificate fingerprint mismatch".to_string(),
+                ))
+            }
+        } else {
+            Ok(rustls::client::ServerCertVerified::assertion())
+        }
     }
 }
 
