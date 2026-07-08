@@ -53,6 +53,15 @@ pub struct WorkerPorts {
     /// HTTP management port for billing proxy (e.g., 9091)
     #[serde(default)]
     pub http: Option<u16>,
+    /// Legacy QUIC port advertised during a port migration; absent on old control planes.
+    #[serde(default)]
+    pub legacy_quic: Option<u16>,
+    /// Legacy gRPC port advertised during a port migration; absent on old control planes.
+    #[serde(default)]
+    pub legacy_grpc: Option<u16>,
+    /// Legacy WebSocket port advertised during a port migration; absent on old control planes.
+    #[serde(default)]
+    pub legacy_ws: Option<u16>,
 }
 
 fn default_grpc_port() -> u16 {
@@ -178,5 +187,44 @@ impl DiscoveryClient {
             ws_endpoint,
             http_endpoint,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_ports_deserializes_with_legacy_fields() {
+        let json = r#"{
+            "quic": 4435, "grpc": 10001, "ws": 9002, "http": 9092,
+            "legacy_quic": 4433, "legacy_grpc": 10000, "legacy_ws": 9000
+        }"#;
+        let p: WorkerPorts = serde_json::from_str(json).unwrap();
+        assert_eq!(p.quic, 4435);
+        assert_eq!(p.legacy_quic, Some(4433));
+        assert_eq!(p.legacy_grpc, Some(10000));
+        assert_eq!(p.legacy_ws, Some(9000));
+    }
+
+    #[test]
+    fn worker_ports_deserializes_without_legacy_fields_old_cp() {
+        // An OLD control plane omits legacy_* entirely — must still parse.
+        let json = r#"{ "quic": 4433, "grpc": 10000, "ws": 9000, "http": 9091 }"#;
+        let p: WorkerPorts = serde_json::from_str(json).unwrap();
+        assert_eq!(p.quic, 4433);
+        assert_eq!(p.legacy_quic, None);
+        assert_eq!(p.legacy_grpc, None);
+        assert_eq!(p.legacy_ws, None);
+    }
+
+    #[test]
+    fn worker_ports_deserializes_bare_minimum() {
+        // grpc/ws/http all defaulted; only quic present.
+        let p: WorkerPorts = serde_json::from_str(r#"{ "quic": 4435 }"#).unwrap();
+        assert_eq!(p.quic, 4435);
+        assert_eq!(p.grpc, 10000); // default_grpc_port
+        assert_eq!(p.ws, None);
+        assert_eq!(p.legacy_quic, None);
     }
 }
