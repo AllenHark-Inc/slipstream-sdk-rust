@@ -514,4 +514,35 @@ mod tests {
         // Original config is untouched.
         assert_eq!(config.get_endpoint(Protocol::Quic), PRIMARY_QUIC);
     }
+
+    #[test]
+    fn with_legacy_endpoint_none_when_equal_to_primary() {
+        // Control plane advertises a legacy endpoint identical to the primary
+        // — there is nothing to gain from a fallback retry against the same
+        // address, so no fallback target should be produced.
+        let config = config_with_worker(PRIMARY_QUIC, Some(PRIMARY_QUIC));
+        assert!(config.with_legacy_endpoint(Protocol::Quic).is_none());
+    }
+
+    #[tokio::test]
+    async fn primary_connect_failure_with_legacy_equal_to_primary_makes_single_attempt() {
+        let dialed = Arc::new(Mutex::new(Vec::new()));
+        let connector = MockConnector {
+            primary_endpoint: PRIMARY_QUIC.to_string(),
+            primary_outcome: Outcome::ConnectFail,
+            legacy_outcome: Outcome::Ok,
+            dialed: dialed.clone(),
+        };
+        // Legacy endpoint equals primary — must not trigger a redundant retry.
+        let config = config_with_worker(PRIMARY_QUIC, Some(PRIMARY_QUIC));
+        let chain = FallbackChain::default();
+
+        let result = chain
+            .try_protocol_with(&connector, &config, Protocol::Quic)
+            .await;
+
+        assert!(matches!(result, Err(SdkError::Connection(_))));
+        // Exactly one attempt — no wasted retry against the same endpoint.
+        assert_eq!(*dialed.lock().unwrap(), vec![PRIMARY_QUIC.to_string()]);
+    }
 }

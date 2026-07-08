@@ -158,14 +158,22 @@ impl Config {
     /// for `protocol` during a port migration.
     ///
     /// Returns `Some(config)` only when the selected worker advertises a legacy
-    /// endpoint for the protocol; otherwise returns `None`, signalling that no
-    /// fallback should be attempted (the backward-compatible default). The
-    /// returned config is identical to `self` except that the selected worker's
-    /// primary endpoint for `protocol` is swapped for the legacy one, so the
-    /// transport dials the legacy port via the normal `get_endpoint` path.
+    /// endpoint for the protocol that actually differs from the primary one;
+    /// otherwise returns `None`, signalling that no fallback should be
+    /// attempted (the backward-compatible default). This guards against a
+    /// control plane advertising a legacy endpoint identical to the primary,
+    /// which would otherwise cause a wasted retry against the exact same
+    /// address. The returned config is identical to `self` except that the
+    /// selected worker's primary endpoint for `protocol` is swapped for the
+    /// legacy one, so the transport dials the legacy port via the normal
+    /// `get_endpoint` path.
     pub(crate) fn with_legacy_endpoint(&self, protocol: Protocol) -> Option<Config> {
         let worker = self.selected_worker.as_ref()?;
         let legacy = worker.get_legacy_endpoint(protocol)?.to_string();
+        if Some(legacy.as_str()) == worker.get_endpoint(protocol) {
+            // Legacy endpoint is identical to primary — no point retrying it.
+            return None;
+        }
         let legacy_worker = worker.with_primary_endpoint(protocol, Some(legacy));
         let mut cfg = self.clone();
         cfg.selected_worker = Some(legacy_worker);

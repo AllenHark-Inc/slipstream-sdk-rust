@@ -115,6 +115,7 @@ fn test_submit_options_serialize_roundtrip() {
         timeout_ms: 60_000,
         dedup_id: Some("unique-123".to_string()),
         retry: None,
+        tpu_submission: false,
     };
 
     let json = serde_json::to_string(&options).unwrap();
@@ -547,7 +548,7 @@ async fn test_connect_timeout_respected() {
 
 #[test]
 fn test_fallback_chain_timeouts() {
-    use allenhark_slipstream::{Protocol, ProtocolTimeouts};
+    use allenhark_slipstream::ProtocolTimeouts;
 
     let timeouts = ProtocolTimeouts::default();
     assert_eq!(timeouts.quic, Duration::from_millis(2000));
