@@ -153,6 +153,24 @@ impl Config {
             Protocol::Http => "http://localhost:9091".to_string(),
         }
     }
+
+    /// Build a variant of this config that dials the *legacy* fallback endpoint
+    /// for `protocol` during a port migration.
+    ///
+    /// Returns `Some(config)` only when the selected worker advertises a legacy
+    /// endpoint for the protocol; otherwise returns `None`, signalling that no
+    /// fallback should be attempted (the backward-compatible default). The
+    /// returned config is identical to `self` except that the selected worker's
+    /// primary endpoint for `protocol` is swapped for the legacy one, so the
+    /// transport dials the legacy port via the normal `get_endpoint` path.
+    pub(crate) fn with_legacy_endpoint(&self, protocol: Protocol) -> Option<Config> {
+        let worker = self.selected_worker.as_ref()?;
+        let legacy = worker.get_legacy_endpoint(protocol)?.to_string();
+        let legacy_worker = worker.with_primary_endpoint(protocol, Some(legacy));
+        let mut cfg = self.clone();
+        cfg.selected_worker = Some(legacy_worker);
+        Some(cfg)
+    }
 }
 
 /// Configuration builder for ergonomic config creation

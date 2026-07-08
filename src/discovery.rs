@@ -179,6 +179,16 @@ impl DiscoveryClient {
         let ws_endpoint = worker.ports.ws
             .map(|port| format!("ws://{}:{}/ws", worker.ip, port));
 
+        // Legacy fallback endpoints — only present during a port migration.
+        // Built with the same URL shape as their primary counterparts so the
+        // connect path can dial them transparently.
+        let legacy_quic = worker.ports.legacy_quic
+            .map(|port| format!("{}:{}", worker.ip, port));
+        let legacy_grpc = worker.ports.legacy_grpc
+            .map(|port| format!("http://{}:{}", worker.ip, port));
+        let legacy_ws = worker.ports.legacy_ws
+            .map(|port| format!("ws://{}:{}/ws", worker.ip, port));
+
         WorkerEndpoint::with_endpoints(
             &worker.id,
             &worker.region,
@@ -187,6 +197,7 @@ impl DiscoveryClient {
             ws_endpoint,
             http_endpoint,
         )
+        .with_legacy(legacy_quic, legacy_grpc, legacy_ws)
     }
 }
 

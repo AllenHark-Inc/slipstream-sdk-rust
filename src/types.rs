@@ -391,6 +391,16 @@ pub struct WorkerEndpoint {
     pub websocket: Option<String>,
     /// HTTP endpoint (e.g., "http://203.0.113.10:9000")
     pub http: Option<String>,
+    /// Legacy QUIC endpoint used as a connect-time fallback during a port
+    /// migration (absent on old control planes / when no migration is active).
+    #[serde(default)]
+    pub legacy_quic: Option<String>,
+    /// Legacy gRPC endpoint used as a connect-time fallback during a migration.
+    #[serde(default)]
+    pub legacy_grpc: Option<String>,
+    /// Legacy WebSocket endpoint used as a connect-time fallback during a migration.
+    #[serde(default)]
+    pub legacy_websocket: Option<String>,
 }
 
 impl WorkerEndpoint {
@@ -404,6 +414,9 @@ impl WorkerEndpoint {
             grpc: Some(format!("http://{}:10000", ip)),
             websocket: Some(format!("ws://{}:9000/ws", ip)),
             http: Some(format!("http://{}:9000", ip)),
+            legacy_quic: None,
+            legacy_grpc: None,
+            legacy_websocket: None,
         }
     }
 
@@ -424,6 +437,9 @@ impl WorkerEndpoint {
             grpc: Some(format!("http://{}:{}", ip, grpc_port)),
             websocket: Some(format!("ws://{}:{}/ws", ip, ws_port)),
             http: Some(format!("http://{}:{}", ip, http_port)),
+            legacy_quic: None,
+            legacy_grpc: None,
+            legacy_websocket: None,
         }
     }
 
@@ -443,7 +459,27 @@ impl WorkerEndpoint {
             grpc,
             websocket,
             http,
+            legacy_quic: None,
+            legacy_grpc: None,
+            legacy_websocket: None,
         }
+    }
+
+    /// Attach legacy fallback endpoints (advertised during a port migration).
+    ///
+    /// These are only dialed if the corresponding primary endpoint fails to
+    /// connect; a `None` leaves the protocol without a fallback (today's
+    /// behavior). HTTP has no legacy fallback.
+    pub fn with_legacy(
+        mut self,
+        legacy_quic: Option<String>,
+        legacy_grpc: Option<String>,
+        legacy_websocket: Option<String>,
+    ) -> Self {
+        self.legacy_quic = legacy_quic;
+        self.legacy_grpc = legacy_grpc;
+        self.legacy_websocket = legacy_websocket;
+        self
     }
 
     /// Get endpoint for a specific protocol
@@ -454,6 +490,32 @@ impl WorkerEndpoint {
             Protocol::WebSocket => self.websocket.as_deref(),
             Protocol::Http => self.http.as_deref(),
         }
+    }
+
+    /// Get the legacy fallback endpoint for a protocol, if one is advertised.
+    ///
+    /// Returns `None` (no fallback) for HTTP and for any protocol whose legacy
+    /// endpoint is absent — the backward-compatible default.
+    pub fn get_legacy_endpoint(&self, protocol: Protocol) -> Option<&str> {
+        match protocol {
+            Protocol::Quic => self.legacy_quic.as_deref(),
+            Protocol::Grpc => self.legacy_grpc.as_deref(),
+            Protocol::WebSocket => self.legacy_websocket.as_deref(),
+            Protocol::Http => None,
+        }
+    }
+
+    /// Return a clone with the primary endpoint for `protocol` replaced by
+    /// `endpoint`. Used to build a legacy-port variant for a fallback attempt.
+    pub(crate) fn with_primary_endpoint(&self, protocol: Protocol, endpoint: Option<String>) -> Self {
+        let mut cloned = self.clone();
+        match protocol {
+            Protocol::Quic => cloned.quic = endpoint,
+            Protocol::Grpc => cloned.grpc = endpoint,
+            Protocol::WebSocket => cloned.websocket = endpoint,
+            Protocol::Http => cloned.http = endpoint,
+        }
+        cloned
     }
 }
 

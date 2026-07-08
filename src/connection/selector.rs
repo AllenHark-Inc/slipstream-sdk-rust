@@ -457,6 +457,9 @@ mod tests {
                 grpc: Some("http://127.0.0.1:10000".to_string()),
                 websocket: Some("ws://127.0.0.1:9000/ws".to_string()),
                 http: Some("http://127.0.0.1:9000".to_string()),
+                legacy_quic: None,
+                legacy_grpc: None,
+                legacy_websocket: None,
             },
             WorkerEndpoint {
                 id: "worker-2".to_string(),
@@ -465,6 +468,9 @@ mod tests {
                 grpc: Some("http://127.0.0.2:10000".to_string()),
                 websocket: Some("ws://127.0.0.2:9000/ws".to_string()),
                 http: Some("http://127.0.0.2:9000".to_string()),
+                legacy_quic: None,
+                legacy_grpc: None,
+                legacy_websocket: None,
             },
             WorkerEndpoint {
                 id: "worker-3".to_string(),
@@ -473,6 +479,9 @@ mod tests {
                 grpc: Some("http://127.0.0.3:10000".to_string()),
                 websocket: Some("ws://127.0.0.3:9000/ws".to_string()),
                 http: Some("http://127.0.0.3:9000".to_string()),
+                legacy_quic: None,
+                legacy_grpc: None,
+                legacy_websocket: None,
             },
         ]
     }
