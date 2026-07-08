@@ -1072,11 +1072,7 @@ impl SlipstreamClient {
         transactions: &[Vec<u8>],
         tip_lamports: Option<u64>,
     ) -> Result<BundleResult> {
-        if transactions.len() < 2 || transactions.len() > 5 {
-            return Err(SdkError::config(
-                "Bundle must contain 2-5 transactions",
-            ));
-        }
+        validate_bundle_size(transactions.len())?;
 
         debug!(
             tx_count = transactions.len(),
@@ -1468,6 +1464,18 @@ impl SlipstreamClient {
     }
 }
 
+/// Validate that a bundle's transaction count falls within the allowed 2-5 range.
+///
+/// Bundles contain 2-5 transactions that are executed atomically. This is a pure,
+/// hermetic check extracted from `submit_bundle`/`submit_bundle_with_tip` so it can
+/// be unit-tested without a live server.
+fn validate_bundle_size(n: usize) -> Result<()> {
+    if n < 2 || n > 5 {
+        return Err(SdkError::config("Bundle must contain 2-5 transactions"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1477,5 +1485,39 @@ mod tests {
         let options = SubmitOptions::default();
         assert!(!options.broadcast_mode);
         assert_eq!(options.max_retries, 2);
+    }
+
+    #[test]
+    fn test_validate_bundle_size_too_few() {
+        assert!(validate_bundle_size(1).is_err());
+    }
+
+    #[test]
+    fn test_validate_bundle_size_min_ok() {
+        assert!(validate_bundle_size(2).is_ok());
+    }
+
+    #[test]
+    fn test_validate_bundle_size_max_ok() {
+        assert!(validate_bundle_size(5).is_ok());
+    }
+
+    #[test]
+    fn test_validate_bundle_size_too_many() {
+        assert!(validate_bundle_size(6).is_err());
+    }
+
+    #[test]
+    fn test_validate_bundle_size_zero() {
+        assert!(validate_bundle_size(0).is_err());
+    }
+
+    #[test]
+    fn test_validate_bundle_size_error_message() {
+        let err = validate_bundle_size(1).unwrap_err();
+        match err {
+            SdkError::Config(msg) => assert_eq!(msg, "Bundle must contain 2-5 transactions"),
+            other => panic!("expected SdkError::Config, got {:?}", other),
+        }
     }
 }

@@ -28,7 +28,7 @@ The official Rust client for **AllenHark Slipstream**, the high-performance Sola
 
 ```toml
 [dependencies]
-allenhark-slipstream = "0.1"
+allenhark-slipstream = "0.4"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -185,6 +185,10 @@ let config = Config::builder()
 The SDK tries protocols in order until one succeeds:
 
 **QUIC** (2s) -> **gRPC** (3s) -> **WebSocket** (3s) -> **HTTP** (5s)
+
+Per-protocol worker ports are discovery-driven (no hardcoded ports like `4433`) --
+the client prefers each worker's primary port and, if present, falls back once to
+a `legacy_quic`/`legacy_grpc`/`legacy_ws` port on connect failure.
 
 Override with `preferred_protocol()` to skip the fallback chain:
 
